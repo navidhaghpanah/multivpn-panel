@@ -1427,10 +1427,15 @@ def user_blocked(u):
     exp = exp.strip()
     if exp:
         try:
-            if date.fromisoformat(exp) < now_tehran().date():
+            expiry = date.fromisoformat(exp)
+            # Older Iranian installations may contain a Jalali-looking year
+            # (for example 1405-01-01) in this field. Treat values outside the
+            # supported Gregorian range as legacy data instead of revoking
+            # every account during the first reconciliation after an update.
+            if expiry.year >= 2000 and expiry < now_tehran().date():
                 return tr("expired")
         except ValueError:
-            return tr("expired")
+            pass
     try:
         q = float(u.get("quota_gb") or 0)
     except (TypeError, ValueError):
@@ -1493,7 +1498,12 @@ def write_secrets(users=None, psk=None, public_ip=None, domain=None):
             pass
     except OSError:
         raise
-    run_checked(["ipsec", "rereadsecrets"])
+    # Some strongSwan packages do not expose rereadsecrets through the same
+    # frontend. The credentials are already written; do not abort the rest of
+    # account reconciliation just because this compatibility command differs.
+    result = run(["ipsec", "rereadsecrets"])
+    if getattr(result, "returncode", 0) != 0:
+        run(["systemctl", "reload", "strongswan-starter"], timeout=15)
 
 
 def safe_secret(value, minimum=8, maximum=128):
@@ -5090,3 +5100,4 @@ if os.environ.get("IKEGUI_COLLECTOR", "1") == "1":
 if __name__ == "__main__":
     load_admin()
     app.run(host="127.0.0.1", port=8765)
+

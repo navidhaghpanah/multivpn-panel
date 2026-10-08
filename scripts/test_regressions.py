@@ -63,6 +63,13 @@ class AccountTests(unittest.TestCase):
         self.A.IPSEC_SECRETS.write_text('deleted : EAP "oldpass"\n')
         self.assertNotIn("deleted", self.A.import_secrets_if_needed())
 
+    def test_legacy_expiry_does_not_revoke_all_accounts(self):
+        user = self.A.load_users()["alice"]
+        user["expires"] = "1405-01-01"
+        self.assertEqual(self.A.user_blocked(user), "")
+        user["expires"] = "legacy-value"
+        self.assertEqual(self.A.user_blocked(user), "")
+
     def test_disk_password_is_authoritative(self):
         self.A.IPSEC_SECRETS.write_text('alice : EAP "stale"\n')
         self.assertEqual(self.A.import_secrets_if_needed()["alice"]["password"], "alicepass")
@@ -225,3 +232,4 @@ class ProcessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
