@@ -41,6 +41,9 @@ class AccountTests(unittest.TestCase):
         self.A = smoke._import_app(appdir, self.root / "cfg", self.root / "data", self.root / "sys")
         self.commands = []
         self.A.run = lambda cmd, timeout=10: self.commands.append(cmd) or ""
+        # Service operations are simulated, so their queried state must also
+        # be simulated rather than inherited from the CI runner's systemd.
+        self.A._systemctl_active = lambda unit: True
         self.A.parse_sessions = lambda: []
         self.A.xray_ss_stats = lambda: {}
         self.A.hysteria_stats = lambda: {}

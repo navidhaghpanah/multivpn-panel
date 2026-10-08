@@ -1294,6 +1294,12 @@ def save_users(users):
     save_json(USERS_FILE, users)
 
 
+@app.before_request
+def invalidate_stale_sessions():
+    if session.get("ok") and session.get("auth_version", 0) != load_admin().get("auth_version", 0):
+        session.clear()
+
+
 def login_required(fn):
     @wraps(fn)
     def wrap(*args, **kwargs):
@@ -2163,7 +2169,7 @@ def parse_sessions():
         s = line.strip()
         m = re.search(
             r"^(IKEv2-EAP|L2TP-PSK)\[(\d+)\]:\s+ESTABLISHED\s+(.+?),\s+"
-            r"[\d.]+\[.*?\]\.\.\.([\d.]+)\[",
+            r"[^\s\[]+\[.*?\]\.\.\.([^\s\[]+)\[",
             s,
         )
         if m:
@@ -2187,9 +2193,9 @@ def parse_sessions():
             continue
         if not current:
             continue
-        m = re.search(r"Remote EAP identity:\s+(\S+)", s)
+        m = re.search(r"Remote EAP identity:\s+(\S+)", s, re.I)
         if m:
-            current["user"] = m.group(1)
+            current["user"] = m.group(1).strip("'\"")
         m = re.search(r"0\.0\.0\.0/0\s+===\s+([\d.]+)/32", s)
         if m:
             current["vip"] = m.group(1)
