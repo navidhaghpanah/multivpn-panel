@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="settings-grid">
+  <article class="panel settings-card"><header class="settings-heading"><div><h2>{{ t.card_update }}</h2></div></header>
+    {% if update_job %}<p>Update: <strong>{{ update_job.state }}</strong> — {{ update_job.detail }}</p>{% endif %}
+    {% if domain_job %}<p>Certificate: <strong>{{ domain_job.state }}</strong> — {{ domain_job.domain }} {{ domain_job.detail or '' }}</p>{% endif %}
+    <form method="post" action="{{ url_for('settings_update_apply') }}" data-confirm="{{ t.update_confirm }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button" type="submit">{{ t.update_now }}</button></form>
+  </article>
   <article class="panel settings-card"><header class="settings-heading"><span class="settings-icon blue">↔</span><div><h2>{{ t.card_sessions }}</h2><p>{{ t.card_sessions_p }}</p></div></header><form method="post" action="{{ url_for('settings_sessions') }}" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><span>{{ t.max_sess }}</span><input name="max_sessions_per_user" type="number" min="1" max="10" value="{{ max_sessions_per_user }}" required><small>{{ t.max_sess_h }}</small></label><button class="primary-button" type="submit">{{ t.save_cleanup }}</button></form></article>
   <article class="panel settings-card"><header class="settings-heading"><span class="settings-icon green">DNS</span><div><h2>{{ t.card_dns }}</h2><p>{{ t.card_dns_p }}</p></div></header>
     <div class="dns-presets" role="group" aria-label="{{ t.dns_presets }}">

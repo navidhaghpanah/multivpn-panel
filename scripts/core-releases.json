@@ -1,0 +1,8 @@
+{
+  "Xray-linux-64.zip": {"url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip", "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"},
+  "Xray-linux-arm64-v8a.zip": {"url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-arm64-v8a.zip", "sha256": "4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"},
+  "hysteria-linux-amd64": {"url": "https://github.com/HyNetworks/hysteria/releases/download/app/v2.13.0/hysteria-linux-amd64", "sha256": "907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691"},
+  "hysteria-linux-arm64": {"url": "https://github.com/HyNetworks/hysteria/releases/download/app/v2.13.0/hysteria-linux-arm64", "sha256": "a68a61a84452ca250ce0368202521965ca9cc9d801a404f1dc9008ac6cf677a7"},
+  "mtg-2.2.8-linux-amd64.tar.gz": {"url": "https://github.com/9seconds/mtg/releases/download/v2.2.8/mtg-2.2.8-linux-amd64.tar.gz", "sha256": "7ef19d079d85f4e00d4f8334ec1f3f3c8718e3d0ed1f3109ea9a8673138a2102"},
+  "mtg-2.2.8-linux-arm64.tar.gz": {"url": "https://github.com/9seconds/mtg/releases/download/v2.2.8/mtg-2.2.8-linux-arm64.tar.gz", "sha256": "562a94dd4cafcb8f179b76cfeafb76da12747c8e230bc76235bf8746cc189644"}
+}

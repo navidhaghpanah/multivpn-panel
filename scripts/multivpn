@@ -133,9 +133,10 @@ cmd_uninstall() {
   if [[ -n "$src" ]]; then
     bash "$src"
   else
-    systemctl disable --now "$PANEL_UNIT" 2>/dev/null || true
+    systemctl disable --now "$PANEL_UNIT" panel-telegram-bot 2>/dev/null || true
     rm -f /etc/nginx/sites-enabled/ikev2-l2tp-gui /etc/nginx/sites-available/ikev2-l2tp-gui
     rm -f /etc/systemd/system/ikev2-l2tp-gui.service
+    rm -f /etc/systemd/system/panel-telegram-bot.service
     rm -f /etc/ppp/ip-up.d/ikev2-l2tp-gui /etc/ppp/ip-down.d/ikev2-l2tp-gui
     rm -rf "$APP_DIR"
     systemctl restart nginx 2>/dev/null || true

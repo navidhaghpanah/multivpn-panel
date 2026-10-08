@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ["IKEGUI_COLLECTOR"] = "0"
 import app as panel  # noqa: E402
 
 API_BASE = ""
@@ -300,10 +301,7 @@ def handle_smart_pick(chat_id, message_id, name, os_, udp):
 def apply_user_change(name, users):
     with panel._lock:
         panel.save_users(users)
-        panel.write_secrets(users)
-        panel.write_xray_ss_config(users)
-        panel.write_hysteria_config(users)
-        panel.write_mtg_config(users)
+        panel.sync_accounts(users)
 
 
 def handle_users(chat_id, message_id, page):
@@ -322,52 +320,54 @@ def handle_user_detail(chat_id, message_id, name):
 
 
 def handle_toggle(chat_id, message_id, name, field):
-    users = panel.load_users()
-    u = users.get(name)
-    if not u:
-        send(chat_id, "کاربر پیدا نشد.", main_menu(), message_id)
-        return
-    if field not in TOGGLE_FIELDS:
-        send(chat_id, "فیلد نامعتبر.", main_menu(), message_id)
-        return
-    if field == "ss":
-        u["ss_enabled"] = not u.get("ss_enabled")
-        if u["ss_enabled"] and not u.get("ss_key"):
-            u["ss_key"] = panel.new_ss_key()
-        if u["ss_enabled"] and not u.get("ss_port"):
-            u["ss_port"] = panel.allocate_ss_port()
-    elif field == "hy":
-        u["hy_enabled"] = not u.get("hy_enabled")
-    elif field == "vless":
-        u["vless_enabled"] = not u.get("vless_enabled")
-        if u["vless_enabled"] and not u.get("vless_uuid"):
-            u["vless_uuid"] = panel.new_vless_uuid()
-    elif field == "vmess":
-        u["vmess_enabled"] = not u.get("vmess_enabled")
-        if u["vmess_enabled"] and not u.get("vmess_uuid"):
-            u["vmess_uuid"] = panel.new_vmess_uuid()
-    elif field == "http":
-        u["http_enabled"] = not u.get("http_enabled")
-    elif field == "mtg":
-        u["mtg_enabled"] = not u.get("mtg_enabled")
-    elif field == "ikev2":
-        u["ikev2_enabled"] = not panel.flag_on(u, "ikev2_enabled", True)
-    elif field == "l2tp":
-        u["l2tp_enabled"] = not panel.flag_on(u, "l2tp_enabled", True)
-    elif field == "enabled":
-        u["enabled"] = not u.get("enabled", True)
-    apply_user_change(name, users)
+    with panel._lock:
+        users = panel.load_users()
+        u = users.get(name)
+        if not u:
+            send(chat_id, "کاربر پیدا نشد.", main_menu(), message_id)
+            return
+        if field not in TOGGLE_FIELDS:
+            send(chat_id, "فیلد نامعتبر.", main_menu(), message_id)
+            return
+        if field == "ss":
+            u["ss_enabled"] = not u.get("ss_enabled")
+            if u["ss_enabled"] and not u.get("ss_key"):
+                u["ss_key"] = panel.new_ss_key()
+            if u["ss_enabled"] and not u.get("ss_port"):
+                u["ss_port"] = panel.allocate_ss_port()
+        elif field == "hy":
+            u["hy_enabled"] = not u.get("hy_enabled")
+        elif field == "vless":
+            u["vless_enabled"] = not u.get("vless_enabled")
+            if u["vless_enabled"] and not u.get("vless_uuid"):
+                u["vless_uuid"] = panel.new_vless_uuid()
+        elif field == "vmess":
+            u["vmess_enabled"] = not u.get("vmess_enabled")
+            if u["vmess_enabled"] and not u.get("vmess_uuid"):
+                u["vmess_uuid"] = panel.new_vmess_uuid()
+        elif field == "http":
+            u["http_enabled"] = not u.get("http_enabled")
+        elif field == "mtg":
+            u["mtg_enabled"] = not u.get("mtg_enabled")
+        elif field == "ikev2":
+            u["ikev2_enabled"] = not panel.flag_on(u, "ikev2_enabled", True)
+        elif field == "l2tp":
+            u["l2tp_enabled"] = not panel.flag_on(u, "l2tp_enabled", True)
+        elif field == "enabled":
+            u["enabled"] = not u.get("enabled", True)
+        apply_user_change(name, users)
     send(chat_id, fmt_user_detail(name, u), user_detail_kb(name, u), message_id)
 
 
 def handle_reset(chat_id, message_id, name):
-    users = panel.load_users()
-    u = users.get(name)
-    if not u:
-        send(chat_id, "کاربر پیدا نشد.", main_menu(), message_id)
-        return
-    u["used_bytes"] = 0
-    apply_user_change(name, users)
+    with panel._lock:
+        users = panel.load_users()
+        u = users.get(name)
+        if not u:
+            send(chat_id, "کاربر پیدا نشد.", main_menu(), message_id)
+            return
+        u["used_bytes"] = 0
+        apply_user_change(name, users)
     send(chat_id, "مصرف %s صفر شد.\n\n" % hx(name) + fmt_user_detail(name, u), user_detail_kb(name, u), message_id)
 
 
@@ -391,10 +391,7 @@ def handle_delete_confirm(chat_id, message_id, name):
         if name in users:
             users.pop(name)
             panel.save_users(users)
-            panel.write_secrets(users)
-            panel.write_xray_ss_config(users)
-            panel.write_hysteria_config(users)
-            panel.write_mtg_config(users)
+            panel.sync_accounts(users)
     text, markup = users_page(0)
     send(chat_id, "کاربر %s حذف شد.\n\n%s" % (hx(name), text), markup, message_id)
 
@@ -535,10 +532,7 @@ def finish_add_flow(chat_id, message_id):
             "sub_token": panel.new_sub_token(),
         }
         panel.save_users(users)
-        panel.write_secrets(users)
-        panel.write_xray_ss_config(users)
-        panel.write_hysteria_config(users)
-        panel.write_mtg_config(users)
+        panel.sync_accounts(users)
     send(
         chat_id,
         "✅ کاربر ساخته شد.\n\nنام: <code>%s</code>\nرمز: <code>%s</code>\n\n%s"

@@ -235,6 +235,7 @@ cp -f /etc/letsencrypt/live/${DOMAIN}/privkey.pem /etc/ipsec.d/private/server.ke
 chmod 600 /etc/ipsec.d/private/server.key
 ipsec rereadall >/dev/null 2>&1 || true
 systemctl reload nginx >/dev/null 2>&1 || true
+systemctl try-restart panel-shadowsocks panel-hysteria >/dev/null 2>&1 || true
 EOF
   chmod +x /etc/letsencrypt/renewal-hooks/deploy/ikev2-l2tp-gui.sh
   if [[ -f /etc/letsencrypt/renewal/${DOMAIN}.conf ]]; then
@@ -495,13 +496,13 @@ if [[ -n "$XRAY_ASSET" ]]; then
   install -d /opt/panel-xray /etc/panel-xray /opt/panel-hysteria /etc/panel-hysteria
   chmod 700 /etc/panel-xray /etc/panel-hysteria
 
-  XRAY_URL="${XRAY_URL:-https://github.com/XTLS/Xray-core/releases/latest/download/${XRAY_ASSET}}"
-  HY_URL="${HY_URL:-https://github.com/apernet/hysteria/releases/latest/download/${HY_ASSET}}"
+  XRAY_URL="${XRAY_URL:-}"
+  HY_URL="${HY_URL:-}"
 
   tmp_dl="$(mktemp -d)"
   if [[ -x /opt/panel-xray/xray ]]; then
     ok "xray-core ghablan nasb shode, skip download"
-  elif curl -fsSL -o "$tmp_dl/xray.zip" "$XRAY_URL"; then
+  elif python3 "$SCRIPT_DIR/scripts/verified_download.py" "$XRAY_ASSET" "$tmp_dl/xray.zip" "$XRAY_URL" "${XRAY_SHA256:-}"; then
     unzip -oq "$tmp_dl/xray.zip" xray -d /opt/panel-xray
     chmod 0755 /opt/panel-xray/xray
     ok "xray-core nasb shod"
@@ -510,7 +511,7 @@ if [[ -n "$XRAY_ASSET" ]]; then
   fi
   if [[ -x /opt/panel-hysteria/hysteria ]]; then
     ok "hysteria2 ghablan nasb shode, skip download"
-  elif curl -fsSL -o "$tmp_dl/hysteria" "$HY_URL"; then
+  elif python3 "$SCRIPT_DIR/scripts/verified_download.py" "$HY_ASSET" "$tmp_dl/hysteria" "$HY_URL" "${HY_SHA256:-}"; then
     install -m 0755 "$tmp_dl/hysteria" /opt/panel-hysteria/hysteria
     ok "hysteria2 nasb shod"
   else
@@ -587,9 +588,9 @@ if [[ -n "$MTG_ASSET" ]]; then
   install -d /opt/panel-mtg /etc/panel-mtg
   chmod 700 /etc/panel-mtg
   if [[ ! -x /opt/panel-mtg/mtg ]]; then
-    MTG_URL="${MTG_URL:-https://github.com/9seconds/mtg/releases/download/v2.2.8/${MTG_ASSET}}"
+    MTG_URL="${MTG_URL:-}"
     tmp_mtg="$(mktemp -d)"
-    if curl -fsSL -o "$tmp_mtg/mtg.tar.gz" "$MTG_URL"; then
+    if python3 "$SCRIPT_DIR/scripts/verified_download.py" "$MTG_ASSET" "$tmp_mtg/mtg.tar.gz" "$MTG_URL" "${MTG_SHA256:-}"; then
       tar -xzf "$tmp_mtg/mtg.tar.gz" -C "$tmp_mtg"
       mtg_bin="$(find "$tmp_mtg" -type f -name mtg | head -n1)"
       if [[ -n "$mtg_bin" ]]; then
@@ -670,6 +671,7 @@ if [[ -f "$APP_DIR/panel-telegram-bot.service" ]]; then
 fi
 rm -f "$APP_DIR/ikev2-l2tp-gui.service" "$APP_DIR/panel-telegram-bot.service"
 systemctl daemon-reload
+printf '2\n' > "$DATA_DIR/deployment-version"
 systemctl enable xl2tpd strongswan-starter ikev2-l2tp-gui nginx >/dev/null
 if [[ -f /etc/systemd/system/panel-mtg.service ]]; then
   systemctl enable panel-mtg >/dev/null || true

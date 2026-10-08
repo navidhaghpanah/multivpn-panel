@@ -1,15 +1,10 @@
 name: Deploy panel to VPS
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "panel/**"
-      - "clients/**"
-      - "scripts/deploy.sh"
-      - "scripts/multivpn"
-      - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -36,4 +31,4 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: sudo bash -c 'curl -fsSL -o /tmp/deploy.sh https://raw.githubusercontent.com/navidhaghpanah/multivpn-panel/main/scripts/deploy.sh && bash /tmp/deploy.sh main'
+          script: sudo multivpn update main

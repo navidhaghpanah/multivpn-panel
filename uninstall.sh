@@ -5,10 +5,11 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 BACKUP_PATH_FILE="/etc/ikev2-l2tp-gui/backup-path"
-systemctl disable --now ikev2-l2tp-gui panel-shadowsocks panel-hysteria panel-mtg 2>/dev/null || true
+systemctl disable --now ikev2-l2tp-gui panel-telegram-bot panel-shadowsocks panel-hysteria panel-mtg 2>/dev/null || true
 rm -f /usr/local/bin/multivpn
 rm -f /etc/nginx/sites-enabled/ikev2-l2tp-gui /etc/nginx/sites-available/ikev2-l2tp-gui
 rm -f /etc/systemd/system/ikev2-l2tp-gui.service
+rm -f /etc/systemd/system/panel-telegram-bot.service
 rm -f /etc/ppp/ip-up.d/ikev2-l2tp-gui /etc/ppp/ip-down.d/ikev2-l2tp-gui
 rm -rf /opt/ikev2-l2tp-gui
 if [[ -f "$BACKUP_PATH_FILE" ]]; then

@@ -20,7 +20,7 @@
 - `VMess` روی `WS+TLS`
 - `Shadowsocks 2022`
 - `Hysteria2`
-- `HTTP` proxy
+- `HTTPS` proxy
 - `MTProto` با `mtg`
 
 ### اتصال هوشمند
@@ -44,7 +44,7 @@
 - سایدبار چپ، تم روشن و تیره، فارسی و انگلیسی
 - تیک جدا برای هر پروتکل هنگام ساخت کاربر
 - تاریخ انقضا و حجم به گیگ، مشترک بین پروتکل‌ها
-- سقف دستگاه هم‌زمان برای هر کاربر (پیش‌فرض ۱)
+- سقف مجموع نشست‌های IKEv2/L2TP هر کاربر (پیش‌فرض ۱)؛ پروکسی‌ها سقف دستگاه ندارند
 - آنلاین‌ها، نشست‌ها، ترافیک
 - قطع دستی نشست و پاک‌سازی خودکار
 - QR و لینک برای VLESS / VMess / Shadowsocks / Hysteria2 / HTTP / MTProto و لینک اشتراک
@@ -56,7 +56,7 @@
 
 ### پروتکل‌های اضافه
 
-تاریخ انقضا، حجم و سقف دستگاه بین همه مشترک است.
+تاریخ انقضا روی همه اعمال می‌شود. حجم بین IKEv2/L2TP، Xray و Hysteria2 مشترک است. MTProto فقط برای حساب بدون سقف حجم است؛ با حذف عضو، secret مشترک عوض می‌شود و اعضای باقی‌مانده باید لینک جدید بگیرند.
 
 | پروتکل | سرویس | پورت | احراز هویت |
 | --- | --- | --- | --- |
@@ -64,7 +64,7 @@
 | VMess WS+TLS | همان xray | TCP `2053`، path `/vmess` | UUID، فقط با گواهی دامنه |
 | Shadowsocks 2022 | همان xray | TCP/UDP از `8388` | کلید `2022-blake3-aes-128-gcm` |
 | Hysteria2 | `panel-hysteria.service` | UDP `443` | همان یوزر و رمز پنل |
-| HTTP proxy | همان xray | TCP `10809` | یوزر و رمز پنل، بدون TLS |
+| HTTP proxy | همان xray | TCP `10809` | یوزر و رمز حساب VPN، با TLS و پورت اختصاصی هر کاربر |
 | MTProto | `panel-mtg.service` | TCP `3128` | یک secret برای کل پنل |
 
 - VLESS و VMess و Shadowsocks و HTTP داخل یک `xray-core` هستند. MTProto با sidecar `mtg` است.
@@ -86,7 +86,7 @@
 | UDP `500` / `4500` / `1701` | IKEv2 و L2TP |
 | TCP `8443` | VLESS Reality |
 | TCP `2053` | VMess |
-| TCP `10809` | HTTP proxy |
+| TCP from `10809` | HTTPS proxy (one port per user) |
 | TCP `3128` | MTProto |
 | UDP `443` | Hysteria2 |
 | TCP/UDP از `8388` | Shadowsocks، یک پورت برای هر کاربر |
@@ -178,16 +178,16 @@ The form defaults to an Iran-filtering bias (mobile, Reality/Hysteria up, IKEv2/
 - Left sidebar, light/dark, FA/EN
 - Per-protocol checkboxes on each account
 - Shared expiry and quota
-- Per-user device cap (default 1)
+- Combined IKEv2/L2TP session cap (default 1); proxy device limits are not supported
 - Live sessions, traffic, CPU, RAM, public IP, totals since boot
 - VPS speed test (server uplink, not your phone)
-- QR/links plus a subscription URL
+- QR/links plus a subscription URL; HTTPS proxy links use `https://`
 - Change PSK and IKEv2 domain from the panel
 - Interactive or non-interactive install
 
 ### Extra protocols
 
-Expiry, quota, and the device cap are shared.
+Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray and Hysteria2. MTProto is available only for unlimited-quota accounts; membership changes rotate its shared secret, so remaining members must refresh their links.
 
 | Protocol | Unit | Default port | Auth |
 | --- | --- | --- | --- |
@@ -195,14 +195,14 @@ Expiry, quota, and the device cap are shared.
 | VMess WS+TLS | same xray | TCP `2053`, path `/vmess` | UUID; needs a domain cert |
 | Shadowsocks 2022 | same xray | TCP/UDP from `8388` | `2022-blake3-aes-128-gcm` |
 | Hysteria2 | `panel-hysteria.service` | UDP `443` | same panel password |
-| HTTP proxy | same xray | TCP `10809` | panel user/pass, no TLS |
+| HTTP proxy | same xray | TCP `10809` | VPN account user/pass, TLS, a dedicated port per account |
 | MTProto | `panel-mtg.service` | TCP `3128` | one FakeTLS secret |
 
 VLESS Reality does not need a domain cert. Keys are minted on first xray write and stored in `config.json`. Default dest is `www.microsoft.com:443`. Old VLESS+TLS links stop working after the Reality cutover; keep the UUID and import the new link.
 
 VMess and Hysteria2 stay down until Let’s Encrypt is present. Hysteria2 is UDP, so it does not fight nginx on TCP 443.
 
-Do not edit generated configs by hand. `sudo multivpn update` copies the panel and extra units without dropping live IKEv2 tunnels.
+Do not edit generated configs by hand. `sudo multivpn update` queues a detached update worker, provisions missing services, validates the application, and checks readiness. Deleted/blocked VPN sessions are disconnected. Proxy connections may reconnect during migration.
 
 ### Install
 
@@ -214,7 +214,7 @@ Point the domain at the VPS first. Open:
 | UDP `500` / `4500` / `1701` | IKEv2 / L2TP |
 | TCP `8443` | VLESS Reality |
 | TCP `2053` | VMess |
-| TCP `10809` | HTTP proxy |
+| TCP from `10809` | HTTPS proxy (one port per user) |
 | TCP `3128` | MTProto |
 | UDP `443` | Hysteria2 |
 | TCP/UDP from `8388` | Shadowsocks, one port per user |
@@ -276,6 +276,31 @@ sudo multivpn uninstall
 If the CLI is missing: `sudo bash scripts/multivpn install-cli`.
 
 ---
+
+## Updating an existing installation from the panel
+
+Open the panel and press **Update** in the top bar or Settings. The first update from an older version may close the browser connection while the web service restarts. Wait a few minutes and reload Settings. A detached worker completes provisioning, runs smoke/regression tests, and reports `complete` or `failed` in Settings. Failed updates attempt an application rollback; account data is retained.
+
+The old updater's application-only copy is supported: the new application detects the missing deployment marker and schedules the full migration automatically. No fresh installation or deletion of existing users is needed. New installations receive the marker during installation.
+
+Important migration changes:
+
+- Existing deleted/disabled/expired/over-quota IKEv2 and L2TP sessions are terminated, and stale system credentials no longer recreate users in the panel.
+- MTProto members must refresh their shared link after migration and subsequent membership changes. Metered accounts cannot use this unmetered shared backend.
+- HTTP proxy now requires TLS and uses an individual port per account. Refresh the proxy link and use a client supporting HTTPS proxies; the old plaintext proxy settings stop working. The active UFW firewall is updated for generated ports; external provider firewalls must allow those ports too.
+- The session limit is a combined IKEv2/L2TP limit. Proxy protocols do not implement a reliable device cap. TCP connection count is not used as a substitute for device count.
+- Account expiry/quota enforcement runs immediately on changes and periodically (about every 20 seconds). Traffic accounting remains a polling system, rather than an exact billing ledger.
+- Admin password or TOTP changes revoke old panel sessions.
+- Certificate issuance runs outside the HTTP worker. Settings shows its result; failed issuance restores the previous domain configuration.
+
+Update logs: `journalctl -u multivpn-update`. Certificate logs: `journalctl -u multivpn-domain`.
+
+GitHub SSH deployment is manual (`workflow_dispatch`). Pushing source changes does not automatically deploy to a VPS; use the panel Update button for the existing installation.
+
+New core downloads are version-pinned and SHA256-verified using `scripts/core-releases.json`. Existing core binaries are retained during panel updates. Custom download URLs require corresponding `XRAY_SHA256`, `HY_SHA256`, or `MTG_SHA256` values.
+
+Validation: `bash scripts/selftest.sh` and `python3 scripts/test_regressions.py`. GitHub CI runs the suite with the Ubuntu 22.04/24.04 Python versions. These tests simulate host service operations; they do not replace live VPN connectivity and fresh-install tests.
+
 
 ## Authors
 

@@ -61,6 +61,7 @@ def _seed(cfg: Path, data: Path, users_payload) -> None:
 
 
 def _import_app(app_dir: Path, cfg: Path, data: Path, sysdir: Path):
+    os.environ["IKEGUI_COLLECTOR"] = "0"
     os.environ["IKEGUI_APP"] = str(app_dir)
     os.environ["IKEGUI_CFG"] = str(cfg)
     os.environ["IKEGUI_DATA"] = str(data)
@@ -83,6 +84,8 @@ def _import_app(app_dir: Path, cfg: Path, data: Path, sysdir: Path):
     A.NGINX_SITE = sysdir / "nginx"
     A.PPP_ONLINE = sysdir / "ppp-online"
     A.PPP_ONLINE.mkdir(exist_ok=True)
+    # Config and route tests must never invoke host VPN/systemd operations.
+    A.run = lambda cmd, timeout=10: ""
     A.app.config["TESTING"] = True
     A.app.config["SESSION_COOKIE_SECURE"] = False
     A.load_admin()
