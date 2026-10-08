@@ -64,6 +64,8 @@ function setSidebar(open) {
   document.body.classList.toggle('sidebar-open', open);
   const backdrop = document.querySelector('[data-sidebar-backdrop]');
   if (backdrop) backdrop.hidden = !open;
+  const toggle = document.querySelector('[data-sidebar-toggle]');
+  if (toggle) toggle.setAttribute('aria-expanded', String(open));
 }
 
 document.addEventListener('click', event => {
@@ -71,6 +73,9 @@ document.addEventListener('click', event => {
     setSidebar(!document.body.classList.contains('sidebar-open'));
   }
   if (event.target.closest('[data-sidebar-backdrop]')) {
+    setSidebar(false);
+  }
+  if (window.matchMedia('(max-width: 768px)').matches && event.target.closest('.side-nav a')) {
     setSidebar(false);
   }
 
@@ -108,6 +113,10 @@ document.addEventListener('click', event => {
     if (mtg) mtg.checked = editButton.dataset.mtg === '1';
     dialog.showModal();
   }
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) setSidebar(false);
 });
 
 document.querySelectorAll('dialog').forEach(dialog => {
@@ -156,3 +165,4 @@ window.addEventListener('pageshow', () => {
     }
   });
 });
+
