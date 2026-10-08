@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import http.client
 import io
 import ipaddress
 import json
@@ -12,6 +13,7 @@ import re
 import shutil
 import struct
 import socket
+import signal
 import subprocess
 import threading
 import time
@@ -21,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+import tempfile
 from datetime import date, datetime
 from functools import wraps
 from pathlib import Path
@@ -38,6 +41,7 @@ from flask import (
     url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
+from state_lock import StateLock
 
 APP_DIR = Path(os.environ.get("IKEGUI_APP", "/opt/ikev2-l2tp-gui"))
 CFG_DIR = Path(os.environ.get("IKEGUI_CFG", "/etc/ikev2-l2tp-gui"))
@@ -134,7 +138,7 @@ I18N = {
         "restart": "ری‌استارت پنل",
         "restart_confirm": "پنل وب ری‌استارت شود؟ تونل‌های VPN قطع نمی‌شوند.",
         "update": "به‌روزرسانی",
-        "update_confirm": "پنل به‌روزرسانی و ری‌استارت می‌شود (فقط پنل وب؛ تانل‌های فعال قطع نمی‌شوند). ادامه می‌دهید؟",
+        "update_confirm": "پنل به‌روزرسانی می‌شود. حساب‌های حذف‌شده قطع می‌شوند و ممکن است اتصال پروکسی‌ها کوتاه قطع شود. ادامه می‌دهید؟",
         "confirm_title": "تأیید عملیات",
         "cancel": "انصراف",
         "confirm": "تأیید",
@@ -225,7 +229,7 @@ I18N = {
         "expires": "تاریخ انقضا",
         "expires_hint": "خالی یعنی بدون انقضا",
         "quota": "حجم (GB)",
-        "quota_hint": "صفر یعنی نامحدود",
+        "quota_hint": "صفر یعنی نامحدود. MTProto فقط برای حساب بدون سقف حجم فعال می‌شود.",
         "create_user": "+ ساخت کاربر",
         "user_list": "فهرست کاربران",
         "user_list_p": "ویرایش حجم، تاریخ و رمز بدون نمایش رمز فعلی",
@@ -289,7 +293,7 @@ I18N = {
         "card_sessions": "نشست‌های هم‌زمان",
         "card_sessions_p": "کنترل تعداد اتصال مجاز برای هر حساب",
         "max_sess": "حداکثر نشست برای هر کاربر",
-        "max_sess_h": "بین ۱ تا ۱۰؛ روی IKEv2، Shadowsocks و Hysteria2 اعمال می‌شود. نشست/دستگاه اضافه خودکار قطع می‌شود.",
+        "max_sess_h": "بین ۱ تا ۱۰؛ سقف مجموع نشست‌های IKEv2 و L2TP هر کاربر. پروکسی‌ها محدودیت تعداد دستگاه ندارند.",
         "save_cleanup": "ذخیره و پاک‌سازی",
         "card_dns": "DNS تونل",
         "card_dns_p": "DNS کلاینت‌های VPN. از دکمه‌ها انتخاب کنید یا IP دلخواه بگذارید.",
@@ -520,7 +524,7 @@ I18N = {
         "restart": "Restart panel",
         "restart_confirm": "Restart the web panel? VPN tunnels stay up.",
         "update": "Update",
-        "update_confirm": "The panel will update and restart (web panel only; live tunnels stay up). Continue?",
+        "update_confirm": "Update panel? Deleted accounts will be disconnected; proxy connections may briefly reconnect.",
         "confirm_title": "Confirm",
         "cancel": "Cancel",
         "confirm": "Confirm",
@@ -611,7 +615,7 @@ I18N = {
         "expires": "Expiry",
         "expires_hint": "Empty means never",
         "quota": "Quota (GB)",
-        "quota_hint": "Zero means unlimited",
+        "quota_hint": "Zero means unlimited. MTProto is available only for unlimited-quota accounts.",
         "create_user": "+ Create user",
         "user_list": "Users",
         "user_list_p": "Edit quota, expiry and password without showing the current one",
@@ -675,7 +679,7 @@ I18N = {
         "card_sessions": "Concurrent sessions",
         "card_sessions_p": "How many connections each account may keep",
         "max_sess": "Max sessions per user",
-        "max_sess_h": "1 to 10; applies to IKEv2, Shadowsocks and Hysteria2. Extra devices are dropped.",
+        "max_sess_h": "1 to 10; combined IKEv2/L2TP sessions per user. Proxy protocols do not enforce device limits.",
         "save_cleanup": "Save and clean",
         "card_dns": "Tunnel DNS",
         "card_dns_p": "DNS pushed to VPN clients. Pick a preset or type IPs.",
@@ -908,7 +912,8 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 _cpu_prev = None
 _net_prev = None
-_lock = threading.Lock()
+_lock = StateLock(DATA_DIR / "state.lock")
+state_transaction = _lock.transaction
 _login_attempts = {}
 LOGIN_WINDOW = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
@@ -1051,12 +1056,43 @@ def human(n, lang=None):
     return fa(s) if lang == "fa" else s
 
 
+class CommandOutput(str):
+    def __new__(cls, value, returncode=0):
+        result = super().__new__(cls, value)
+        result.returncode = returncode
+        return result
+
+
 def run(cmd, timeout=10):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return (p.stdout or "") + (p.stderr or "")
+        return CommandOutput((p.stdout or "") + (p.stderr or ""), p.returncode)
     except Exception as e:
-        return str(e)
+        return CommandOutput(str(e), -1)
+
+
+def run_checked(cmd, timeout=10):
+    output = run(cmd, timeout=timeout)
+    if getattr(output, "returncode", 0) != 0:
+        raise RuntimeError("Command failed: " + str(cmd[0]))
+    return output
+
+
+def save_private_text(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", delete=False) as stream:
+            tmp = Path(stream.name)
+            os.chmod(tmp, 0o600)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        tmp.replace(path)
+    finally:
+        if tmp and tmp.exists():
+            tmp.unlink()
 
 
 def load_json(path, default):
@@ -1071,17 +1107,26 @@ def load_json(path, default):
     return data
 
 
+@state_transaction
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp = None
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", delete=False) as stream:
+            tmp = Path(stream.name)
+            os.chmod(tmp, 0o600)
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        tmp.replace(path)
+    finally:
+        if tmp and tmp.exists():
+            tmp.unlink()
 
 
+@state_transaction
 def load_config():
     cfg = load_json(
         CONFIG_FILE,
@@ -1159,6 +1204,14 @@ def allocate_ss_port():
     # Caller must already hold _lock (called from users_add/users_update).
     cfg = load_config()
     port = int(cfg.get("ss_next_port") or 8388)
+    users = load_users()
+    reserved = {int(u.get(k) or 0) for u in users.values() for k in ("ss_port", "http_port")}
+    reserved.update(int(cfg.get(k) or default) for k, default in
+                    (("vless_port", 8443), ("vmess_port", 2053), ("mtg_port", 3128), ("http_port", 10809)))
+    while port in reserved:
+        port += 1
+    if port > 65535:
+        raise ValueError("No free Shadowsocks port")
     cfg["ss_next_port"] = port + 1
     save_config(cfg)
     return port
@@ -1168,6 +1221,7 @@ def save_config(cfg):
     save_json(CONFIG_FILE, cfg)
 
 
+@state_transaction
 def load_admin():
     data = load_json(ADMIN_FILE, {})
     if not data.get("secret"):
@@ -1243,7 +1297,9 @@ def save_users(users):
 def login_required(fn):
     @wraps(fn)
     def wrap(*args, **kwargs):
-        if not session.get("ok"):
+        admin = load_admin()
+        if not session.get("ok") or session.get("auth_version", 0) != admin.get("auth_version", 0):
+            session.clear()
             if request.path.startswith("/api/"):
                 return jsonify({"error": "auth"}), 401
             return redirect(url_for("login"))
@@ -1327,7 +1383,12 @@ def parse_secrets_users():
     return found
 
 
+@state_transaction
 def import_secrets_if_needed():
+    # users.json is authoritative. Never resurrect a deleted account from
+    # stale system credentials or overwrite its newer password.
+    if USERS_FILE.exists():
+        return load_users()
     users = load_users()
     if not isinstance(users, dict):
         users = {}
@@ -1354,24 +1415,34 @@ def import_secrets_if_needed():
 def user_blocked(u):
     if not u.get("enabled", True):
         return tr("blocked")
-    exp = (u.get("expires") or "").strip()
+    exp = u.get("expires") or ""
+    if not isinstance(exp, str):
+        return tr("expired")
+    exp = exp.strip()
     if exp:
         try:
             if date.fromisoformat(exp) < now_tehran().date():
                 return tr("expired")
         except ValueError:
-            pass
+            return tr("expired")
     try:
         q = float(u.get("quota_gb") or 0)
     except (TypeError, ValueError):
         return tr("quota_nan")
     if not math.isfinite(q) or q < 0:
         return tr("quota_nan")
-    if q > 0 and float(u.get("used_bytes") or 0) >= q * (1024 ** 3):
+    try:
+        used = float(u.get("used_bytes") or 0)
+    except (TypeError, ValueError):
+        return tr("quota_nan")
+    if not math.isfinite(used) or used < 0:
+        return tr("quota_nan")
+    if q > 0 and used >= q * (1024 ** 3):
         return tr("quota_full")
     return ""
 
 
+@state_transaction
 def write_secrets(users=None, psk=None, public_ip=None, domain=None):
     # Always read users.json from disk. A stale in-memory copy (traffic
     # collector) must not wipe a user that was just added in the panel.
@@ -1404,19 +1475,19 @@ def write_secrets(users=None, psk=None, public_ip=None, domain=None):
     try:
         IPSEC_SECRETS.parent.mkdir(parents=True, exist_ok=True)
         CHAP_SECRETS.parent.mkdir(parents=True, exist_ok=True)
-        IPSEC_SECRETS.write_text(text, encoding="utf-8")
+        save_private_text(IPSEC_SECRETS, text)
         try:
             os.chmod(IPSEC_SECRETS, 0o600)
         except OSError:
             pass
-        CHAP_SECRETS.write_text(chap_text, encoding="utf-8")
+        save_private_text(CHAP_SECRETS, chap_text)
         try:
             os.chmod(CHAP_SECRETS, 0o600)
         except OSError:
             pass
     except OSError:
-        return
-    run(["ipsec", "rereadsecrets"])
+        raise
+    run_checked(["ipsec", "rereadsecrets"])
 
 
 def safe_secret(value, minimum=8, maximum=128):
@@ -1437,6 +1508,15 @@ def new_vless_uuid():
 
 def new_sub_token():
     return secrets.token_urlsafe(24)
+
+
+def mtg_allowed(u):
+    # Shared mtg cannot attribute usage. Do not let metered accounts bypass
+    # their quota through an unmetered shared secret.
+    try:
+        return bool(u.get("mtg_enabled") and not user_blocked(u) and float(u.get("quota_gb") or 0) == 0)
+    except (TypeError, ValueError):
+        return False
 
 
 def new_vmess_uuid():
@@ -1570,6 +1650,7 @@ def new_mtg_secret(front_domain):
     return "ee" + key.hex() + host.encode("ascii").hex()
 
 
+@state_transaction
 def write_xray_ss_config(users=None):
     # One dedicated inbound per user (own port + own key) rather than a
     # single shared-port multi-user (EIH) inbound: xray-core's shadowsocks
@@ -1687,25 +1768,48 @@ def write_xray_ss_config(users=None):
                 },
             }
         )
-    # HTTP proxy inbound (no TLS). Accounts = panel users with http_enabled.
-    http_accounts = []
+    # HTTPS proxy: encrypt credentials on the client-to-proxy connection.
+    http_ports = []
+    users_changed = False
+    reserved = {int(u.get("ss_port") or 0) for u in users.values()}
+    reserved.update(int(u.get("http_port") or 0) for u in users.values())
+    reserved.update(int(cfg.get(k) or default) for k, default in
+                    (("vless_port", 8443), ("vmess_port", 2053), ("mtg_port", 3128)))
+    next_http_port = int(cfg.get("http_port") or 10809)
     for name, u in users.items():
         if user_blocked(u) or not u.get("http_enabled"):
             continue
         pw = u.get("password") or ""
         if not vpn_password_ok(pw):
             continue
-        http_accounts.append({"user": name, "pass": pw})
-    if http_accounts:
+        if not u.get("http_port"):
+            while next_http_port in reserved:
+                next_http_port += 1
+            if next_http_port > 65535:
+                raise ValueError("No free HTTPS proxy port")
+            u["http_port"] = next_http_port
+            reserved.add(next_http_port)
+            users_changed = True
+        if not cert.is_file() or not key_path.is_file():
+            continue
+        http_ports.append(int(u["http_port"]))
         inbounds.append(
             {
-                "tag": "http-in",
+                "tag": "http-%s" % name,
                 "listen": "0.0.0.0",
-                "port": int(cfg.get("http_port") or 10809),
+                "port": int(u["http_port"]),
                 "protocol": "http",
-                "settings": {"accounts": http_accounts, "allowTransparent": False},
+                "settings": {"accounts": [{"user": name, "pass": pw}], "allowTransparent": False},
+                "streamSettings": {
+                    "network": "tcp", "security": "tls",
+                    "tlsSettings": {"certificates": [
+                        {"certificateFile": str(cert), "keyFile": str(key_path)}
+                    ]},
+                },
             }
         )
+    if users_changed:
+        save_users(users)
     doc = {
         "log": {"loglevel": "warning"},
         "stats": {},
@@ -1726,16 +1830,21 @@ def write_xray_ss_config(users=None):
     except OSError:
         unchanged = False
     if unchanged:
+        if inbounds and _systemctl_active("panel-shadowsocks") is False:
+            run_checked(["systemctl", "start", "panel-shadowsocks"], timeout=15)
         return
+    if http_ports and "Status: active" in run(["ufw", "status"]):
+        for port in http_ports:
+            run(["ufw", "allow", "%d/tcp" % port])
     XRAY_SS_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     tmp = XRAY_SS_CONFIG.with_suffix(".tmp")
     tmp.write_text(new_text, encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(XRAY_SS_CONFIG)
     if inbounds:
-        run(["systemctl", "restart", "panel-shadowsocks"], timeout=15)
+        run_checked(["systemctl", "restart", "panel-shadowsocks"], timeout=15)
     else:
-        run(["systemctl", "stop", "panel-shadowsocks"], timeout=15)
+        run_checked(["systemctl", "stop", "panel-shadowsocks"], timeout=15)
 
 
 
@@ -1743,6 +1852,7 @@ def yaml_str(value):
     return json.dumps(str(value))
 
 
+@state_transaction
 def write_hysteria_config(users=None):
     users = load_users() if users is None else users
     cfg = load_config()
@@ -1792,6 +1902,8 @@ def write_hysteria_config(users=None):
     except OSError:
         unchanged = False
     if unchanged:
+        if cert.is_file() and key.is_file() and _systemctl_active("panel-hysteria") is False:
+            run_checked(["systemctl", "start", "panel-hysteria"], timeout=15)
         return
     HYSTERIA_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     tmp = HYSTERIA_CONFIG.with_suffix(".tmp")
@@ -1799,11 +1911,12 @@ def write_hysteria_config(users=None):
     os.chmod(tmp, 0o600)
     tmp.replace(HYSTERIA_CONFIG)
     if cert.is_file() and key.is_file():
-        run(["systemctl", "restart", "panel-hysteria"], timeout=15)
+        run_checked(["systemctl", "restart", "panel-hysteria"], timeout=15)
     else:
-        run(["systemctl", "stop", "panel-hysteria"], timeout=15)
+        run_checked(["systemctl", "stop", "panel-hysteria"], timeout=15)
 
 
+@state_transaction
 def write_mtg_config(users=None):
     # Xray has no mtproto inbound. Like 3x-ui v3.3 we run sidecar mtg
     # (9seconds/mtg) with a single FakeTLS secret at panel/settings level.
@@ -1812,12 +1925,26 @@ def write_mtg_config(users=None):
     users = load_users() if users is None else users
     cfg = load_config()
     any_user = any(
-        (not user_blocked(u)) and u.get("mtg_enabled") for u in users.values()
+        mtg_allowed(u) for u in users.values()
     )
     if not any_user:
-        run(["systemctl", "stop", "panel-mtg"], timeout=15)
+        if MTG_BIN.exists():
+            run_checked(["systemctl", "stop", "panel-mtg"], timeout=15)
+        if cfg.get("mtg_membership"):
+            cfg["mtg_membership"] = ""
+            cfg["mtg_secret"] = ""
+            save_config(cfg)
         return
     changed = False
+    members = sorted(name for name, u in users.items()
+                     if mtg_allowed(u))
+    membership = hashlib.sha256(json.dumps(members).encode()).hexdigest()
+    # The shared backend cannot revoke one holder. Rotate on membership
+    # changes (including the first upgrade) to invalidate removed holders.
+    if cfg.get("mtg_membership") != membership:
+        cfg["mtg_secret"] = new_mtg_secret(cfg.get("mtg_domain") or "cloudflare.com")
+        cfg["mtg_membership"] = membership
+        changed = True
     if not cfg.get("mtg_domain"):
         cfg["mtg_domain"] = "cloudflare.com"
         changed = True
@@ -1840,13 +1967,17 @@ def write_mtg_config(users=None):
         unchanged = MTG_CONFIG.read_text(encoding="utf-8") == new_text
     except OSError:
         unchanged = False
+    if unchanged:
+        if _systemctl_active("panel-mtg") is False:
+            run_checked(["systemctl", "start", "panel-mtg"], timeout=15)
+        return
     if not unchanged:
         MTG_CONFIG.parent.mkdir(parents=True, exist_ok=True)
         tmp = MTG_CONFIG.with_suffix(".tmp")
         tmp.write_text(new_text, encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(MTG_CONFIG)
-    run(["systemctl", "restart", "panel-mtg"], timeout=15)
+    run_checked(["systemctl", "restart", "panel-mtg"], timeout=15)
 
 
 def rewrite_ipsec_leftid(domain):
@@ -1885,7 +2016,8 @@ def _write_certbot_hook(domain):
         "cp -f /etc/letsencrypt/live/%s/privkey.pem /etc/ipsec.d/private/server.key\n"
         "chmod 600 /etc/ipsec.d/private/server.key\n"
         "ipsec rereadall >/dev/null 2>&1 || true\n"
-        "systemctl reload nginx >/dev/null 2>&1 || true\n" % (domain, domain),
+        "systemctl reload nginx >/dev/null 2>&1 || true\n"
+        "systemctl try-restart panel-shadowsocks panel-hysteria >/dev/null 2>&1 || true\n" % (domain, domain),
         encoding="utf-8",
     )
     os.chmod(CERTBOT_HOOK, 0o755)
@@ -1996,6 +2128,8 @@ def xray_ss_stats():
         name = stat.get("name") or ""
         m = re.match(r"^user>>>(.+)>>>traffic>>>(uplink|downlink)$", name)
         if not m:
+            m = re.match(r"^inbound>>>http-(.+)>>>traffic>>>(uplink|downlink)$", name)
+        if not m:
             continue
         user = m.group(1)
         result[user] = result.get(user, 0) + int(stat.get("value") or 0)
@@ -2047,6 +2181,9 @@ def parse_sessions():
                 "bytes_total": 0,
                 "proto": "IKEv2" if m.group(1) == "IKEv2-EAP" else "L2TP",
             }
+            age = re.search(r"(\d+)\s+(second|minute|hour|day)", m.group(3))
+            scale = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+            current["order"] = time.time() - (int(age[1]) * scale[age[2]] if age else 0)
             continue
         if not current:
             continue
@@ -2087,6 +2224,7 @@ def parse_sessions():
                         {
                             "conn": "L2TP-PPP",
                             "id": f.name,
+                            "started": parts[2] if len(parts) >= 3 else "",
                             "uptime": "",
                             "remote": "",
                             "user": name,
@@ -2120,19 +2258,21 @@ def cleanup_excess_sessions(sessions=None):
     limit = max_sessions_per_user()
     grouped = {}
     for session_info in sessions:
-        if session_info.get("proto") != "IKEv2" or not session_info.get("user"):
+        if session_info.get("proto") not in ("IKEv2", "L2TP") or not session_info.get("user"):
             continue
+        if session_info.get("conn") == "L2TP-PSK":
+            continue  # PPP records carry authenticated usernames.
         try:
-            ike_id = int(session_info.get("id"))
+            age_key = int(session_info.get("order") or session_info.get("started") or session_info.get("id"))
         except (TypeError, ValueError):
-            continue
-        grouped.setdefault(session_info["user"], []).append((ike_id, session_info))
+            age_key = 0
+        grouped.setdefault(session_info["user"], []).append((age_key, session_info))
 
     terminated = []
     for username, active in grouped.items():
         active.sort(key=lambda item: item[0], reverse=True)
         for _, old_session in active[limit:]:
-            target = terminate_ike_session(old_session)
+            target = terminate_user_session(old_session)
             terminated.append({"user": username, "target": target})
     return terminated
 
@@ -2146,99 +2286,64 @@ def terminate_ike_session(session_info):
     return target
 
 
-def cleanup_excess_ss_sessions(users=None):
-    """Enforce the same per-user concurrent-connection cap for Shadowsocks.
-
-    Each SS-enabled user has their own dedicated port (see
-    write_xray_ss_config), so counting/killing established connections on
-    that port is a precise per-user device count — unlike Hysteria2, where
-    the native API can only kick a whole identity at once.
-    """
-    users = load_users() if users is None else users
-    limit = max_sessions_per_user()
-    terminated = []
-    for name, u in users.items():
-        if not u.get("ss_enabled"):
-            continue
-        port = u.get("ss_port")
-        if not port:
-            continue
-        out = run(["ss", "-tnH", "state", "established", "sport", "=", ":%d" % int(port)], timeout=5)
-        peers = []
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                peers.append(parts[3])
-        for peer in peers[limit:]:
-            host, sep, pport = peer.rpartition(":")
-            if not sep or not pport.isdigit():
-                continue
-            host = host.strip("[]")
-            run(["ss", "-K", "dst", host, "dport", pport, "sport", "=", ":%d" % int(port)], timeout=5)
-            terminated.append({"user": name, "target": peer})
-    return terminated
-
-
-def cleanup_excess_hysteria_sessions(users=None):
-    """Enforce the per-user concurrent-connection cap for Hysteria2.
-
-    Hysteria2's own API only exposes a device *count* per user and a
-    kick-by-identity call (no per-connection selection), so an over-limit
-    user has all of their sessions kicked at once rather than just the
-    oldest — see /kick's own caveat that a client may simply reconnect.
-    """
-    users = load_users() if users is None else users
-    limit = max_sessions_per_user()
-    cfg = load_config()
-    secret = cfg.get("hy_stats_secret") or ""
-    terminated = []
+def terminate_user_session(s):
+    if s.get("conn") != "L2TP-PPP":
+        return terminate_ike_session(s)
+    interface = str(s.get("id") or "")
+    if not re.fullmatch(r"ppp\d+", interface):
+        return None
     try:
-        req = urllib.request.Request(
-            "http://127.0.0.1:9999/online",
-            headers={"Authorization": secret},
-        )
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            online = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError):
-        return terminated
-    over_limit = [
-        name
-        for name, count in (online or {}).items()
-        if name in users and users[name].get("hy_enabled") and int(count or 0) > limit
-    ]
-    if not over_limit:
-        return terminated
-    try:
-        body = json.dumps(over_limit).encode("utf-8")
-        req = urllib.request.Request(
-            "http://127.0.0.1:9999/kick",
-            data=body,
-            headers={"Authorization": secret, "Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=3)
-        terminated = [{"user": name, "target": "hysteria2"} for name in over_limit]
-    except (urllib.error.URLError, OSError):
-        pass
-    return terminated
+        pid = int((Path("/run") / (interface + ".pid")).read_text().strip())
+        if pid <= 1 or (Path("/proc") / str(pid) / "comm").read_text().strip() != "pppd":
+            return None
+        os.kill(pid, signal.SIGTERM)
+        return interface
+    except (OSError, ValueError):
+        return None
 
 
+def revoke_invalid_sessions(users, sessions=None):
+    sessions = parse_sessions() if sessions is None else sessions
+    for s in sessions:
+        name = s.get("user")
+        if not name:
+            continue
+        u = users.get(name)
+        field = "ikev2_enabled" if s.get("proto") == "IKEv2" else "l2tp_enabled"
+        if u is None or user_blocked(u) or not flag_on(u, field, True):
+            terminate_user_session(s)
+
+
+@state_transaction
+def sync_accounts(users=None):
+    app._accounts_ready = False
+    users = load_users() if users is None else users
+    write_secrets(users)
+    revoke_invalid_sessions(users)
+    write_xray_ss_config(users)
+    write_hysteria_config(users)
+    write_mtg_config(users)
+    app._accounts_ready = True
+
+
+@state_transaction
 def sample_traffic():
     sessions = parse_sessions()
     cleanup_excess_sessions(sessions)
-    cleanup_excess_ss_sessions()
-    cleanup_excess_hysteria_sessions()
+    # TCP socket count is not a device count. Do not kill ordinary parallel
+    # Shadowsocks connections. Proxy device caps are not currently supported.
     with _lock:
         users = load_users()
         snap = load_json(SNAP_FILE, {})
-        new_snap = {}
+        new_snap = {k: v for k, v in snap.items()
+                    if k.startswith("__") or k.split(":", 1)[0] in users}
         changed = False
         for s in sessions:
             name = s.get("user") or ""
             if name not in users:
                 continue
             total = int(s.get("bytes_total") or 0)
-            key = "%s:%s:%s" % (name, s.get("proto"), s.get("id"))
+            key = "%s:%s:%s:%s" % (name, s.get("proto"), s.get("id"), s.get("started", ""))
             prev = int(snap.get(key, 0))
             if total >= prev:
                 delta = total - prev
@@ -2248,7 +2353,21 @@ def sample_traffic():
                 users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + delta
                 changed = True
             new_snap[key] = total
+        account_ppp_disconnects(users, new_snap)
         for proto, totals in (("ss", xray_ss_stats()), ("hy", hysteria_stats())):
+            unit = "panel-shadowsocks" if proto == "ss" else "panel-hysteria"
+            epoch = run(["systemctl", "show", unit, "--property=ActiveEnterTimestampMonotonic", "--value"]).strip()
+            if totals and epoch.isdigit() and epoch != "0":
+                old_epoch = snap.get("__epoch_" + proto)
+                if old_epoch and old_epoch != epoch:
+                    for key in list(new_snap):
+                        if key.endswith(":" + proto):
+                            new_snap.pop(key)
+                    snap = dict(snap)
+                    for key in list(snap):
+                        if key.endswith(":" + proto):
+                            snap.pop(key)
+                new_snap["__epoch_" + proto] = epoch
             for name, total in totals.items():
                 if name not in users:
                     continue
@@ -2259,24 +2378,43 @@ def sample_traffic():
                     users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + delta
                     changed = True
                 new_snap[key] = total
-        if changed:
-            save_users(users)
+        save_users(users)
         save_json(SNAP_FILE, new_snap)
-        blocked_now = False
-        for name, u in users.items():
-            if user_blocked(u) and u.get("enabled", True):
-                blocked_now = True
-        if blocked_now or changed:
-            write_secrets()
-        if blocked_now:
-            # Only regenerate SS/Hysteria2 when someone actually needs to be
-            # cut off — both require a process restart (unlike strongSwan's
-            # in-place rereadsecrets), which would drop live connections if
-            # done on every traffic-accounting tick.
-            write_xray_ss_config(users)
-            write_hysteria_config(users)
-            write_mtg_config(users)
+        # Also reconcile deleted/disabled accounts on upgrade and every poll.
+        # Writers skip unchanged proxy configs to preserve unrelated sessions.
+        sync_accounts(users)
         return users, sessions
+
+
+def account_ppp_disconnects(users, snap):
+    logfile = DATA_DIR / "ppp-acct.log"
+    try:
+        with logfile.open("rb") as stream:
+            offset = int(snap.get("__ppp_offset", 0))
+            if logfile.stat().st_size < offset:
+                offset = 0
+            stream.seek(offset)
+            while True:
+                start = stream.tell()
+                line = stream.readline()
+                if not line or not line.endswith(b"\n"):
+                    stream.seek(start)
+                    break
+                fields = line.decode("utf-8", errors="replace").split()
+                # New hook: name IP rx tx end-time interface start-time.
+                if len(fields) == 7 and fields[0] in users:
+                    name, _, rx, tx, _, interface, started = fields
+                    try:
+                        total = int(rx) + int(tx)
+                        key = "%s:L2TP:%s:%s" % (name, interface, started)
+                        previous = int(snap.get(key, 0))
+                        users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + max(0, total - previous)
+                        snap[key] = total
+                    except (ValueError, TypeError):
+                        pass
+            snap["__ppp_offset"] = stream.tell()
+    except (OSError, ValueError):
+        pass
 
 
 def host_stats():
@@ -2435,7 +2573,7 @@ def dashboard_payload():
                 "vless_enabled": bool(u.get("vless_enabled")),
                 "vmess_enabled": bool(u.get("vmess_enabled")),
                 "http_enabled": bool(u.get("http_enabled")),
-                "mtg_enabled": bool(u.get("mtg_enabled")),
+                "mtg_enabled": mtg_allowed(u),
             }
         )
     cfg = load_config()
@@ -2511,6 +2649,7 @@ def login():
             else:
                 session.clear()
                 session["ok"] = True
+                session["auth_version"] = admin.get("auth_version", 0)
                 session.permanent = True
                 _login_attempts.pop(remote, None)
                 resp = redirect(url_for("index"))
@@ -2637,6 +2776,8 @@ def settings():
     d["telegram_bot_masked"] = ("…" + token[-6:]) if token else ""
     d["telegram_admin_ids"] = ", ".join(str(i) for i in (cfg.get("telegram_admin_ids") or []))
     d["update_info"] = update_status()
+    d["update_job"] = load_json(DATA_DIR / "update-status.json", {})
+    d["domain_job"] = load_json(DATA_DIR / "domain-status.json", {})
     d["domain"] = (cfg.get("domain") or "").strip()
     d["ai_base"] = (cfg.get("ai_base") or "").strip()
     d["ai_model"] = (cfg.get("ai_model") or "").strip()
@@ -2822,7 +2963,7 @@ def smart_vps_inventory(name, u, cfg):
     ports = {
         "vless": int(cfg.get("vless_port") or 8443),
         "vmess": int(cfg.get("vmess_port") or 2053),
-        "http": int(cfg.get("http_port") or 10809),
+        "http": int(u.get("http_port") or cfg.get("http_port") or 10809),
         "mtg": int(cfg.get("mtg_port") or 3128),
         "hy": "%s/udp" % int(cfg.get("hy_port") or 443),
         "ss": int(u.get("ss_port") or 0) or None,
@@ -2840,7 +2981,7 @@ def smart_vps_inventory(name, u, cfg):
             "vless": bool(u.get("vless_enabled")),
             "vmess": bool(u.get("vmess_enabled")),
             "http": bool(u.get("http_enabled")),
-            "mtg": bool(u.get("mtg_enabled")),
+            "mtg": mtg_allowed(u),
         },
         "services": services,
         "le_cert": le_ok,
@@ -2947,12 +3088,12 @@ def _proto_enabled_for_user(pid, u):
     if pid == "http":
         return bool(u.get("http_enabled"))
     if pid == "mtg":
-        return bool(u.get("mtg_enabled"))
+        return mtg_allowed(u)
     return False
 
 
 def _proto_inventory_ok(pid, inv):
-    if pid in ("hy", "vmess") and not inv.get("le_cert"):
+    if pid in ("hy", "vmess", "http") and not inv.get("le_cert"):
         return False
     if pid == "vless" and not inv.get("reality_public"):
         return False
@@ -3302,6 +3443,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _PublicHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        if self._tunnel_host:
+            raise OSError("Proxy tunneling is not permitted")
+        addresses = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        if not addresses or any(_ip_blocked(ipaddress.ip_address(row[4][0])) for row in addresses):
+            raise OSError("Non-public destination")
+        # Connect to the checked numeric address; preserve the hostname for
+        # certificate verification and SNI. No second hostname resolution.
+        last_error = None
+        for family, socktype, proto, _, address in addresses:
+            sock = socket.socket(family, socktype, proto)
+            try:
+                sock.settimeout(self.timeout)
+                sock.connect(address)
+                self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+                return
+            except OSError as error:
+                sock.close()
+                last_error = error
+        raise last_error or OSError("Connection failed")
+
+
+class _PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PublicHTTPSConnection, req, context=self._context)
+
+
 def _ai_base_ok(base):
     base = (base or "").strip()
     if not base:
@@ -3317,7 +3486,10 @@ def _ai_base_ok(base):
     host = (u.hostname or "").lower()
     if not host:
         return False
-    port = u.port
+    try:
+        port = u.port
+    except ValueError:
+        return False
     if port is not None and not (1 <= port <= 65535):
         return False
     if _host_blocked(host):
@@ -3464,7 +3636,7 @@ def smart_ai_review(result, lang):
         },
     )
     try:
-        opener = urllib.request.build_opener(_NoRedirect)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect, _PublicHTTPSHandler)
         with opener.open(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         text = (
@@ -3569,10 +3741,10 @@ def vmess_uri(name, u, cfg):
 
 
 def http_proxy_uri(name, u, cfg):
-    port = int(cfg.get("http_port") or 10809)
+    port = int(u.get("http_port") or cfg.get("http_port") or 10809)
     host = (cfg.get("domain") or cfg.get("public_ip") or "").strip()
     pw = u.get("password") or ""
-    return "http://%s:%s@%s:%d" % (
+    return "https://%s:%s@%s:%d" % (
         urllib.parse.quote(name, safe=""),
         urllib.parse.quote(pw, safe=""),
         host,
@@ -3603,7 +3775,7 @@ def sub_uris(name, u, cfg):
         uris.append(vmess_uri(name, u, cfg))
     if u.get("http_enabled") and u.get("password"):
         uris.append(http_proxy_uri(name, u, cfg))
-    if u.get("mtg_enabled") and (cfg.get("mtg_secret") or ""):
+    if mtg_allowed(u) and (cfg.get("mtg_secret") or ""):
         uris.append(mtg_uri(cfg))
     return uris
 
@@ -3793,15 +3965,15 @@ def clients_http(name):
     d["admin_user"] = load_admin().get("user") or ""
     d.update(
         page="clients",
-        page_title="HTTP — %s" % name,
+        page_title="HTTPS Proxy — %s" % name,
         page_subtitle="پروکسی HTTP این کاربر (host:port + نام کاربری / رمز)",
-        proto_name="HTTP",
+        proto_name="HTTPS Proxy",
         uri=uri,
         qr_url=url_for("clients_http_qr", name=name),
-        method="http",
+        method="https",
         server_key=u.get("password") or "",
         user_key=name,
-        port=cfg.get("http_port") or 10809,
+        port=u.get("http_port") or cfg.get("http_port") or 10809,
     )
     return render_template("client_proto.html", **d)
 
@@ -3822,7 +3994,7 @@ def clients_http_qr(name):
 def clients_mtg(name):
     users = load_users()
     u = users.get(name)
-    if not u or not u.get("mtg_enabled"):
+    if not u or not mtg_allowed(u):
         flash("MTProto برای این کاربر فعال نیست.")
         return redirect(url_for("clients_page"))
     cfg = load_config()
@@ -3853,7 +4025,7 @@ def clients_mtg(name):
 def clients_mtg_qr(name):
     users = load_users()
     u = users.get(name)
-    if not u or not u.get("mtg_enabled"):
+    if not u or not mtg_allowed(u):
         return ("", 404)
     png = qr_png(mtg_uri(load_config()))
     return (png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
@@ -4077,6 +4249,14 @@ def run_speed_test():
     return result
 
 
+@app.route("/health/ready")
+def health_ready():
+    if request.remote_addr not in ("127.0.0.1", "::1") or request.headers.get("X-Real-IP"):
+        return ("", 404)
+    ready = bool(getattr(app, "_accounts_ready", False))
+    return jsonify({"ready": ready}), 200 if ready else 503
+
+
 @app.route("/api/status")
 @login_required
 def api_status():
@@ -4190,10 +4370,7 @@ def users_add():
             "sub_token": new_sub_token(),
         }
         save_users(users)
-        write_secrets(users)
-        write_xray_ss_config(users)
-        write_hysteria_config(users)
-        write_mtg_config(users)
+        sync_accounts(users)
     proto_note = []
     if ikev2_enabled:
         proto_note.append("IKEv2")
@@ -4282,10 +4459,7 @@ def users_update():
         if vmess_enabled and not users[name].get("vmess_uuid"):
             users[name]["vmess_uuid"] = new_vmess_uuid()
         save_users(users)
-        write_secrets(users)
-        write_xray_ss_config(users)
-        write_hysteria_config(users)
-        write_mtg_config(users)
+        sync_accounts(users)
     flash_t("user_saved", name=name)
     return redirect(url_for("users_page"))
 
@@ -4305,10 +4479,7 @@ def users_delete():
             return redirect(url_for("users_page"))
         users.pop(name)
         save_users(users)
-        write_secrets(users)
-        write_xray_ss_config(users)
-        write_hysteria_config(users)
-        write_mtg_config(users)
+        sync_accounts(users)
     flash_t("user_deleted", name=name)
     return redirect(url_for("users_page"))
 
@@ -4357,22 +4528,18 @@ def settings_domain():
     if not DOMAIN_RE.match(domain):
         flash_t("domain_bad")
         return redirect(url_for("settings"))
-    with _lock:
-        cfg = load_config()
-        old_domain = (cfg.get("domain") or "").strip()
-        cfg["domain"] = domain
-        save_config(cfg)
-        rewrite_ipsec_leftid(domain)
-        write_secrets()
-        ssl_ok, ssl_note = apply_domain_ssl(old_domain, domain)
-        write_xray_ss_config()
-        write_hysteria_config()
-        write_mtg_config()
-    if ssl_ok:
-        flash_t("domain_ssl_ok", domain=domain)
-    else:
-        extra = (" " + _public_flash_detail(ssl_note, 120)) if ssl_note else ""
-        flash_t("domain_ssl_fail", domain=domain, extra=extra)
+    try:
+        process = subprocess.run([
+            "systemd-run", "--unit=multivpn-domain", "--collect", "--property=Type=exec",
+            "--setenv=IKEGUI_COLLECTOR=0", "--setenv=IKEGUI_APP=" + str(APP_DIR),
+            "--setenv=IKEGUI_CFG=" + str(CFG_DIR), "--setenv=IKEGUI_DATA=" + str(DATA_DIR),
+            "/usr/bin/python3", str(APP_DIR / "domain_worker.py"), domain,
+        ], capture_output=True, text=True, timeout=10)
+        if process.returncode != 0:
+            raise OSError("Domain operation could not start or is already running")
+        flash("Certificate update started. Check Settings for its result.")
+    except (OSError, subprocess.SubprocessError) as error:
+        flash(_public_flash_detail(str(error)))
     return redirect(url_for("settings"))
 
 
@@ -4418,6 +4585,7 @@ def settings_dns():
 @app.route("/settings/admin", methods=["POST"])
 @login_required
 @csrf_required
+@state_transaction
 def settings_admin():
     pw = (request.form.get("password") or "").strip()
     if len(pw) < 12 or len(pw) > 128:
@@ -4425,7 +4593,9 @@ def settings_admin():
         return redirect(url_for("settings"))
     data = load_admin()
     data["password"] = generate_password_hash(pw)
+    data["auth_version"] = int(data.get("auth_version", 0)) + 1
     save_admin(data)
+    session.clear()
     flash_t("admin_ok")
     return redirect(url_for("settings"))
 
@@ -4445,6 +4615,7 @@ def settings_totp_start():
 @app.route("/settings/totp/confirm", methods=["POST"])
 @login_required
 @csrf_required
+@state_transaction
 def settings_totp_confirm():
     pending = session.get("totp_pending") or ""
     if not pending:
@@ -4454,6 +4625,7 @@ def settings_totp_confirm():
         return redirect(url_for("settings"))
     data = load_admin()
     data["totp_secret"] = pending
+    data["auth_version"] = int(data.get("auth_version", 0)) + 1
     data["totp_enabled"] = True
     save_admin(data)
     session.pop("totp_pending", None)
@@ -4464,6 +4636,7 @@ def settings_totp_confirm():
 @app.route("/settings/totp/off", methods=["POST"])
 @login_required
 @csrf_required
+@state_transaction
 def settings_totp_off():
     data = load_admin()
     secret = data.get("totp_secret") or ""
@@ -4472,6 +4645,7 @@ def settings_totp_off():
         return redirect(url_for("settings"))
     data["totp_enabled"] = False
     data["totp_secret"] = ""
+    data["auth_version"] = int(data.get("auth_version", 0)) + 1
     save_admin(data)
     session.pop("totp_pending", None)
     flash_t("totp_disabled")
@@ -4481,6 +4655,7 @@ def settings_totp_off():
 @app.route("/settings/profile", methods=["POST"])
 @login_required
 @csrf_required
+@state_transaction
 def settings_profile():
     display_name = (request.form.get("display_name") or "").strip()[:64]
     contact = (request.form.get("contact") or "").strip()[:128]
@@ -4606,22 +4781,16 @@ def _public_flash_detail(text, limit=180):
 
 
 def apply_update():
-    if not (REPO_DIR / ".git").is_dir():
-        REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
-        clone_out = run(["git", "clone", "--branch", REPO_BRANCH, REPO_URL, str(REPO_DIR)], timeout=90)
-        if not (REPO_DIR / ".git").is_dir():
-            return False, clone_out
     deploy_script = REPO_DIR / "scripts" / "deploy.sh"
     if not deploy_script.is_file():
-        return False, "scripts/deploy.sh در %s پیدا نشد" % REPO_DIR
-    out = run(["bash", str(deploy_script), REPO_BRANCH], timeout=120)
-    ok = "panel restarted OK" in out
-    if not ok and "run as root" not in out and "panel failed to start" not in out:
-        # Restarting this unit from inside the request often drops the OK line;
-        # git already moved HEAD to origin/main.
-        if "HEAD is now at" in out or "up to date" in out.lower():
-            ok = True
-    return ok, out
+        return False, "Update source not found."
+    try:
+        process = subprocess.run(["bash", str(deploy_script), REPO_BRANCH],
+                                 capture_output=True, text=True, timeout=10)
+        output = (process.stdout or "") + (process.stderr or "")
+        return process.returncode == 0 and "panel update queued" in output, output
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, str(error)
 
 
 
@@ -4734,6 +4903,55 @@ def settings_backup():
     )
 
 
+def validate_restored_user(name, u):
+    if not USER_RE.fullmatch(name) or not isinstance(u, dict):
+        raise ValueError("user")
+    for field in ("quota_gb", "used_bytes"):
+        value = float(u.get(field) or 0)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(field)
+    for field in ("ss_port", "http_port"):
+        if u.get(field) and not 1 <= int(u[field]) <= 65535:
+            raise ValueError(field)
+    if u.get("expires"):
+        date.fromisoformat(u["expires"])
+    for field in ("enabled", "ikev2_enabled", "l2tp_enabled", "ss_enabled",
+                  "hy_enabled", "vless_enabled", "vmess_enabled", "http_enabled", "mtg_enabled"):
+        if field in u and not isinstance(u[field], bool):
+            raise ValueError(field)
+    if u.get("password") and (not isinstance(u["password"], str) or not vpn_password_ok(u["password"])):
+        raise ValueError("password")
+    for field in ("vless_uuid", "vmess_uuid"):
+        if u.get(field):
+            uuid.UUID(u[field])
+
+
+def validate_restored_config(cfg):
+    if not isinstance(cfg, dict):
+        raise ValueError("config")
+    domain = cfg.get("domain") or ""
+    if domain and (not isinstance(domain, str) or not DOMAIN_RE.fullmatch(domain)):
+        raise ValueError("domain")
+    if domain != (load_config().get("domain") or ""):
+        raise ValueError("Change domain through Settings before restoring this backup")
+    if cfg.get("psk") and not safe_secret(cfg["psk"], 16, 128):
+        raise ValueError("psk")
+    for field in ("http_port", "hy_port", "mtg_port", "vless_port", "vmess_port", "ss_next_port"):
+        if cfg.get(field) is not None and not 1 <= int(cfg[field]) <= 65535:
+            raise ValueError(field)
+    if not 1 <= int(cfg.get("max_sessions_per_user", 1)) <= 10:
+        raise ValueError("sessions")
+    dns = cfg.get("dns", [])
+    if not isinstance(dns, list) or len(dns) > 2:
+        raise ValueError("dns")
+    for value in dns:
+        ipaddress.ip_address(value)
+    for field in ("reality_server_names",):
+        if field in cfg and (not isinstance(cfg[field], list) or
+                             any(not DOMAIN_RE.fullmatch(value) for value in cfg[field])):
+            raise ValueError(field)
+
+
 @app.route("/settings/restore", methods=["POST"])
 @login_required
 @csrf_required
@@ -4778,19 +4996,14 @@ def settings_restore():
             if not isinstance(users, dict):
                 raise ValueError("users")
             for k, v in users.items():
-                if not USER_RE.match(str(k)) or not isinstance(v, dict):
-                    raise ValueError("user")
-                pw = v.get("password") or ""
-                if pw and not vpn_password_ok(str(pw)):
-                    raise ValueError("password")
+                validate_restored_user(k, v)
         if "config.json" in extracted:
             cfg = json.loads(extracted["config.json"].decode("utf-8"))
-            if not isinstance(cfg, dict):
-                raise ValueError("config")
+            validate_restored_config(cfg)
             if cfg.get("ai_base") and not _ai_base_ok(str(cfg.get("ai_base") or "")):
                 cfg["ai_base"] = ""
                 extracted["config.json"] = (json.dumps(cfg, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError):
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError):
         flash_t("backup_bad")
         return redirect(url_for("settings"))
     with _lock:
@@ -4808,10 +5021,8 @@ def settings_restore():
         if "config.json" in extracted:
             CONFIG_FILE.write_bytes(extracted["config.json"])
             os.chmod(CONFIG_FILE, 0o600)
-        write_secrets()
-        write_xray_ss_config()
-        write_hysteria_config()
-        write_mtg_config()
+        apply_tunnel_dns(load_config().get("dns") or [])
+        sync_accounts()
     flash_t("backup_ok")
     return redirect(url_for("settings"))
 
@@ -4822,7 +5033,7 @@ def settings_restore():
 def settings_update_apply():
     ok, out = apply_update()
     if ok:
-        flash_t("upd_ok")
+        flash("Update started. Wait for the panel to reconnect, then check Settings.")
     else:
         flash_t("upd_fail", out=_public_flash_detail(out))
     return redirect(url_for("settings"))
@@ -4833,7 +5044,7 @@ def collector_loop():
         try:
             sample_traffic()
         except Exception:
-            pass
+            app.logger.exception("Traffic collection failed")
         time.sleep(20)
 
 
@@ -4841,22 +5052,34 @@ def start_background():
     if getattr(app, "_collector", False):
         return
     app._collector = True
-    # After `multivpn update` the new Reality/VMess/HTTP/mtg inbounds only
-    # exist once we rewrite xray/hysteria/mtg. Skip-if-unchanged inside each
-    # writer keeps live tunnels up when nothing actually changed.
-    try:
-        write_xray_ss_config()
-        write_hysteria_config()
-        write_mtg_config()
-    except Exception:
-        pass
-    t = threading.Thread(target=collector_loop, daemon=True)
+    t = threading.Thread(target=initialize_collector, daemon=True)
     t.start()
+
+
+def initialize_collector():
+    # Bootstrap installations whose old updater copied only application files.
+    # The detached worker completes provisioning without dying on web restart.
+    version_file = DATA_DIR / "deployment-version"
+    version = version_file.read_text().strip() if version_file.exists() else ""
+    job = load_json(DATA_DIR / "update-status.json", {})
+    if version != "2" and job.get("state") not in ("running", "failed"):
+        # Stop an old bot's independent collector during first migration.
+        run(["systemctl", "stop", "panel-telegram-bot"], timeout=15)
+        apply_update()
+    try:
+        sync_accounts()
+        domain = load_config().get("domain") or ""
+        if DOMAIN_RE.fullmatch(domain):
+            _write_certbot_hook(domain)
+    except Exception:
+        app.logger.exception("Account reconciliation failed")
+    collector_loop()
 
 
 if ADMIN_FILE.exists():
     load_admin()
-start_background()
+if os.environ.get("IKEGUI_COLLECTOR", "1") == "1":
+    start_background()
 
 if __name__ == "__main__":
     load_admin()
