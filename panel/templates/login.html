@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon-32.png') }}" sizes="32x32">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700;800&display=swap">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260901-dns') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261008-ui') }}">
 </head>
 <body class="login-body" data-lang="{{ lang }}">
   <div class="login-toolbar">
@@ -28,17 +28,18 @@
     <h1>{{ t.login_h }}</h1>
     <p class="muted">{{ host or t.login_p }}</p>
     {% if err %}<div class="alert bad">{{ err }}</div>{% endif %}
-    <label>{{ t.login_user }}</label>
-    <input name="user" autocomplete="username" autofocus>
-    <label>{{ t.login_pass }}</label>
-    <input name="password" type="password" autocomplete="current-password">
+    <label for="login-user">{{ t.login_user }}</label>
+    <input id="login-user" name="user" autocomplete="username" autofocus required>
+    <label for="login-password">{{ t.login_pass }}</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
     {% if totp_on %}
-    <label>{{ t.login_totp }}</label>
-    <input name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" dir="ltr">
+    <label for="login-totp">{{ t.login_totp }}</label>
+    <input id="login-totp" name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" dir="ltr" required>
     {% endif %}
     <button type="submit">{{ t.login_btn }}</button>
     <p class="authors-line">{{ t.authors }}</p>
   </form>
-  <script src="{{ url_for('static', filename='copy.js', v='20260901-dns') }}" defer></script>
+  <script src="{{ url_for('static', filename='copy.js', v='20261008-ui') }}" defer></script>
 </body>
 </html>
+
