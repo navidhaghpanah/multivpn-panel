@@ -54,6 +54,7 @@ PPP_ONLINE = Path("/var/run/ikev2-l2tp-gui")
 ADMIN_FILE = CFG_DIR / "admin.json"
 CONFIG_FILE = CFG_DIR / "config.json"
 USERS_FILE = DATA_DIR / "users.json"
+DELETED_USERS_FILE = DATA_DIR / "deleted-users.json"
 SNAP_FILE = DATA_DIR / "traffic-snap.json"
 SPEED_FILE = DATA_DIR / "speedtest.json"
 IPSEC_SECRETS = Path("/etc/ipsec.secrets")
@@ -1294,6 +1295,34 @@ def save_users(users):
     save_json(USERS_FILE, users)
 
 
+def deleted_user_names():
+    data = load_json(DELETED_USERS_FILE, [])
+    return {str(name).casefold() for name in data if isinstance(name, str)}
+
+
+def remember_deleted_user(name):
+    names = deleted_user_names()
+    names.add(name.casefold())
+    save_json(DELETED_USERS_FILE, sorted(names))
+
+
+def forget_deleted_user(name):
+    names = deleted_user_names()
+    if name.casefold() in names:
+        names.remove(name.casefold())
+        save_json(DELETED_USERS_FILE, sorted(names))
+
+
+def find_user_record(users, identity):
+    if identity in users:
+        return users[identity]
+    folded = str(identity or "").casefold()
+    for name, user in users.items():
+        if name.casefold() == folded:
+            return user
+    return None
+
+
 @app.before_request
 def invalidate_stale_sessions():
     if session.get("ok") and session.get("auth_version", 0) != load_admin().get("auth_version", 0):
@@ -2320,13 +2349,18 @@ def terminate_user_session(s):
 
 def revoke_invalid_sessions(users, sessions=None):
     sessions = parse_sessions() if sessions is None else sessions
+    deleted = deleted_user_names()
     for s in sessions:
         name = s.get("user")
         if not name:
             continue
-        u = users.get(name)
+        u = find_user_record(users, name)
         field = "ikev2_enabled" if s.get("proto") == "IKEv2" else "l2tp_enabled"
-        if u is None or user_blocked(u) or not flag_on(u, field, True):
+        # strongSwan identity formatting can differ from the panel key. An
+        # unknown identity is therefore not proof that an account was deleted.
+        # Only an explicit deletion tombstone may revoke an unknown identity.
+        explicitly_deleted = u is None and str(name).casefold() in deleted
+        if explicitly_deleted or (u is not None and (user_blocked(u) or not flag_on(u, field, True))):
             terminate_user_session(s)
 
 
@@ -4385,6 +4419,7 @@ def users_add():
             "vmess_uuid": new_vmess_uuid() if vmess_enabled else "",
             "sub_token": new_sub_token(),
         }
+        forget_deleted_user(name)
         save_users(users)
         sync_accounts(users)
     proto_note = []
@@ -4494,6 +4529,7 @@ def users_delete():
             flash("کاربر پیدا نشد.")
             return redirect(url_for("users_page"))
         users.pop(name)
+        remember_deleted_user(name)
         save_users(users)
         sync_accounts(users)
     flash_t("user_deleted", name=name)
@@ -5100,4 +5136,5 @@ if os.environ.get("IKEGUI_COLLECTOR", "1") == "1":
 if __name__ == "__main__":
     load_admin()
     app.run(host="127.0.0.1", port=8765)
+
 
