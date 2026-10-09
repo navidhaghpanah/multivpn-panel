@@ -84,6 +84,16 @@ class AccountTests(unittest.TestCase):
         self.assertTrue(any("IKEv2-EAP[7]" in cmd for cmd in self.commands))
         self.assertIn("bob", self.A.load_users())
 
+    def test_unknown_identity_is_not_mistaken_for_deleted_user(self):
+        sessions = [{"user": "alice@vpn", "proto": "IKEv2", "id": "8", "conn": "IKEv2-EAP"}]
+        self.A.revoke_invalid_sessions(self.A.load_users(), sessions)
+        self.assertFalse(any("IKEv2-EAP[8]" in cmd for cmd in self.commands))
+
+    def test_identity_case_difference_does_not_disconnect_user(self):
+        sessions = [{"user": "ALICE", "proto": "IKEv2", "id": "9", "conn": "IKEv2-EAP"}]
+        self.A.revoke_invalid_sessions(self.A.load_users(), sessions)
+        self.assertFalse(any("IKEv2-EAP[9]" in cmd for cmd in self.commands))
+
     def test_quota_revokes_existing_ike_session(self):
         users = self.A.load_users()
         users["alice"].update(quota_gb=1, used_bytes=2_000_000_000)
@@ -232,4 +242,5 @@ class ProcessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
