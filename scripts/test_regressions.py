@@ -102,6 +102,23 @@ class AccountTests(unittest.TestCase):
         self.A.sample_traffic()
         self.assertTrue(any("IKEv2-EAP[7]" in cmd for cmd in self.commands))
 
+    def test_collector_does_not_drop_overlapping_windows_ike_sessions(self):
+        self.A.parse_sessions = lambda: [
+            {"user": "alice", "proto": "IKEv2", "id": "7", "conn": "IKEv2-EAP", "order": 7, "bytes_total": 0},
+            {"user": "alice", "proto": "IKEv2", "id": "8", "conn": "IKEv2-EAP", "order": 8, "bytes_total": 0},
+        ]
+        self.A.sample_traffic()
+        self.assertFalse(any("IKEv2-EAP[7]" in cmd or "IKEv2-EAP[8]" in cmd for cmd in self.commands))
+
+    def test_manual_cleanup_still_enforces_session_limit(self):
+        sessions = [
+            {"user": "alice", "proto": "IKEv2", "id": "7", "conn": "IKEv2-EAP", "order": 7},
+            {"user": "alice", "proto": "IKEv2", "id": "8", "conn": "IKEv2-EAP", "order": 8},
+        ]
+        self.A.cleanup_excess_sessions(sessions)
+        self.assertTrue(any("IKEv2-EAP[7]" in cmd for cmd in self.commands))
+        self.assertFalse(any("IKEv2-EAP[8]" in cmd for cmd in self.commands))
+
     def test_disabled_protocol_is_revoked(self):
         users = self.A.load_users()
         users["alice"]["ikev2_enabled"] = False
@@ -242,5 +259,6 @@ class ProcessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
