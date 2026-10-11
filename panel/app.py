@@ -255,7 +255,7 @@ I18N = {
         "delete_user_aria": "حذف %(name)s",
         "cap_per_user": "سقف هر کاربر",
         "cleanup_old": "پاک‌سازی نشست‌های قدیمی",
-        "sess_info": "جدیدترین %(n)s نشست هر کاربر حفظ می‌شود. نشست‌های اضافه به‌صورت خودکار حداکثر تا ۲۰ ثانیه بعد بسته می‌شوند.",
+        "sess_info": "پاک‌سازی دستی، جدیدترین %(n)s نشست هر کاربر را حفظ می‌کند. نشست‌های هم‌پوشان IKEv2 به‌صورت خودکار بسته نمی‌شوند.",
         "live_conns": "اتصال‌های زنده",
         "live_conns_p": "برای بستن فوری یک اتصال IKEv2 از دکمهٔ انتهای ردیف استفاده کنید.",
         "col_id": "شناسه",
@@ -294,7 +294,7 @@ I18N = {
         "card_sessions": "نشست‌های هم‌زمان",
         "card_sessions_p": "کنترل تعداد اتصال مجاز برای هر حساب",
         "max_sess": "حداکثر نشست برای هر کاربر",
-        "max_sess_h": "بین ۱ تا ۱۰؛ سقف مجموع نشست‌های IKEv2 و L2TP هر کاربر. پروکسی‌ها محدودیت تعداد دستگاه ندارند.",
+        "max_sess_h": "بین ۱ تا ۱۰؛ هنگام پاک‌سازی دستی برای مجموع نشست‌های IKEv2 و L2TP اعمال می‌شود. پروکسی‌ها محدودیت تعداد دستگاه ندارند.",
         "save_cleanup": "ذخیره و پاک‌سازی",
         "card_dns": "DNS تونل",
         "card_dns_p": "DNS کلاینت‌های VPN. از دکمه‌ها انتخاب کنید یا IP دلخواه بگذارید.",
@@ -641,7 +641,7 @@ I18N = {
         "delete_user_aria": "Delete %(name)s",
         "cap_per_user": "Cap per user",
         "cleanup_old": "Clean old sessions",
-        "sess_info": "The newest %(n)s sessions per user are kept. Extra sessions are dropped within about 20 seconds.",
+        "sess_info": "Manual cleanup keeps the newest %(n)s sessions per user. Overlapping IKEv2 sessions are not dropped automatically.",
         "live_conns": "Live connections",
         "live_conns_p": "Use the end-of-row button to drop an IKEv2 session immediately.",
         "col_id": "ID",
@@ -680,7 +680,7 @@ I18N = {
         "card_sessions": "Concurrent sessions",
         "card_sessions_p": "How many connections each account may keep",
         "max_sess": "Max sessions per user",
-        "max_sess_h": "1 to 10; combined IKEv2/L2TP sessions per user. Proxy protocols do not enforce device limits.",
+        "max_sess_h": "1 to 10; applied to combined IKEv2/L2TP sessions during manual cleanup. Proxy protocols do not enforce device limits.",
         "save_cleanup": "Save and clean",
         "card_dns": "Tunnel DNS",
         "card_dns_p": "DNS pushed to VPN clients. Pick a preset or type IPs.",
@@ -2379,7 +2379,10 @@ def sync_accounts(users=None):
 @state_transaction
 def sample_traffic():
     sessions = parse_sessions()
-    cleanup_excess_sessions(sessions)
+    # Windows can briefly keep overlapping IKE SAs while reconnecting or
+    # changing networks. Automatically dropping the older SA from this
+    # 20-second collector can also tear down the active Windows tunnel.
+    # Session-limit cleanup therefore remains an explicit operator action.
     # TCP socket count is not a device count. Do not kill ordinary parallel
     # Shadowsocks connections. Proxy device caps are not currently supported.
     with _lock:
@@ -5136,5 +5139,6 @@ if os.environ.get("IKEGUI_COLLECTOR", "1") == "1":
 if __name__ == "__main__":
     load_admin()
     app.run(host="127.0.0.1", port=8765)
+
 
 
