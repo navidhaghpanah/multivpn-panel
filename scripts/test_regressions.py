@@ -244,6 +244,20 @@ class AccountTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def test_in_panel_updater_deploys_ui_assets_before_health_check(self):
+        worker = (ROOT / "scripts" / "update-worker.sh").read_text(encoding="utf-8")
+        copy_panel = 'cp -a "$REPO_DIR/panel/." "$APP_DIR/"'
+        restart_panel = "systemctl restart ikev2-l2tp-gui"
+        health_check = "http://127.0.0.1:8765/health/ready"
+        self.assertIn(copy_panel, worker)
+        self.assertIn(restart_panel, worker)
+        self.assertIn(health_check, worker)
+        copy_index = worker.index(copy_panel)
+        restart_index = worker.index(restart_panel, copy_index)
+        health_index = worker.index(health_check, restart_index)
+        self.assertLess(copy_index, restart_index)
+        self.assertLess(restart_index, health_index)
+
     def test_processes_do_not_lose_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "counter.json"

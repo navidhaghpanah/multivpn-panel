@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon-32.png') }}" sizes="32x32">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700;800&display=swap">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261008-ui') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261026-sirgsm') }}">
 </head>
 <body class="login-body" data-lang="{{ lang }}">
   <div class="login-toolbar">
@@ -24,7 +24,8 @@
   </div>
   <form class="login-card" method="post" dir="{{ content_dir }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="mark"><img src="{{ url_for('static', filename='logo.png') }}" alt="NH MultiVPN"></div>
+    <div class="mark"><img src="{{ url_for('static', filename='logo.png') }}" alt="SirGSM VPN"></div>
+    <span class="login-signature">NH</span>
     <h1>{{ t.login_h }}</h1>
     <p class="muted">{{ host or t.login_p }}</p>
     {% if err %}<div class="alert bad">{{ err }}</div>{% endif %}
@@ -39,7 +40,7 @@
     <button type="submit">{{ t.login_btn }}</button>
     <p class="authors-line">{{ t.authors }}</p>
   </form>
-  <script src="{{ url_for('static', filename='copy.js', v='20261008-ui') }}" defer></script>
+  <script src="{{ url_for('static', filename='copy.js', v='20261026-sirgsm') }}" defer></script>
 </body>
 </html>
 

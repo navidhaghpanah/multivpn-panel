@@ -1,5 +1,5 @@
 #!/bin/bash
-# NH MultiVPN installer
+# SirGSM VPN installer
 set -euo pipefail
 
 # Color even under `sudo bash install.sh` (TERM stays). Opt out with NO_COLOR=1.
@@ -22,7 +22,7 @@ hint() { printf '%s%s%s\n' "$C_DIM" "$*" "$C_RST"; }
 banner() {
   echo
   hdr "╔══════════════════════════════════════════╗"
-  hdr "║          NH MultiVPN  —  nasb            ║"
+  hdr "║          SirGSM VPN  —  nasb             ║"
   hdr "╚══════════════════════════════════════════╝"
   echo
 }

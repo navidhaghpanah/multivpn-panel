@@ -281,7 +281,7 @@ I18N = {
         "l2_step2": "UDP 1701. xl2tpd ری‌استارت نمی‌شود.",
         "l2_step3": "PSK از تنظیمات پنل. یوزر/پس همان IKEv2. تیک L2TP روی کاربر لازم است.",
         "android_l2": "اندروید L2TP: نوع L2TP/IPSec PSK، سرور همین دامنه، Secret همان PSK.",
-        "authors": "نویسندگان: Navid Haghpanah",
+        "authors": "SirGSM · NH — Navid Haghbayan",
         "guide_extra": "راهنمای اتصال — VLESS / Shadowsocks / Hysteria2",
         "guide_more": "راهنمای اتصال — VMess / HTTP / MTProto",
         "android_ike": "Android — IKEv2",
@@ -345,8 +345,8 @@ I18N = {
         "card_logs": "گزارش سرویس‌ها",
         "card_logs_p": "journalctl واحدهای پنل، xray، hysteria، mtg و nginx",
         "open_logs": "مشاهده گزارش‌ها",
-        "login_title": "ورود — NH MultiVPN",
-        "login_h": "ورود به NH MultiVPN",
+        "login_title": "ورود — SirGSM VPN",
+        "login_h": "ورود به SirGSM VPN",
         "login_p": "پنل مدیریت کاربران",
         "login_user": "نام کاربری پنل",
         "login_pass": "رمز عبور",
@@ -667,7 +667,7 @@ I18N = {
         "l2_step2": "UDP 1701. xl2tpd is not restarted.",
         "l2_step3": "PSK from panel Settings. User/pass same as IKEv2. L2TP checkbox must be on.",
         "android_l2": "Android L2TP: type L2TP/IPSec PSK, server this domain, Secret = PSK.",
-        "authors": "Authors: Navid Haghpanah",
+        "authors": "SirGSM · NH — Navid Haghbayan",
         "guide_extra": "Connect — VLESS / Shadowsocks / Hysteria2",
         "guide_more": "Connect — VMess / HTTP / MTProto",
         "android_ike": "Android — IKEv2",
@@ -731,8 +731,8 @@ I18N = {
         "card_logs": "Service logs",
         "card_logs_p": "journalctl for panel, xray, hysteria, mtg and nginx",
         "open_logs": "Open logs",
-        "login_title": "Login — NH MultiVPN",
-        "login_h": "Sign in to NH MultiVPN",
+        "login_title": "Login — SirGSM VPN",
+        "login_h": "Sign in to SirGSM VPN",
         "login_p": "User admin panel",
         "login_user": "Panel username",
         "login_pass": "Password",
@@ -1272,8 +1272,8 @@ def totp_ok(secret, code):
 
 
 def totp_otpauth(secret, user, host):
-    label = urllib.parse.quote("NH MultiVPN:" + (user or "admin"), safe="")
-    issuer = urllib.parse.quote("NH MultiVPN", safe="")
+    label = urllib.parse.quote("SirGSM VPN:" + (user or "admin"), safe="")
+    issuer = urllib.parse.quote("SirGSM VPN", safe="")
     return "otpauth://totp/%s?secret=%s&issuer=%s&period=30&digits=6" % (label, secret, issuer)
 
 

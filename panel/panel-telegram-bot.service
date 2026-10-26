@@ -1,5 +1,5 @@
 [Unit]
-Description=NH MultiVPN Telegram admin bot
+Description=SirGSM VPN Telegram admin bot
 After=network-online.target ikev2-l2tp-gui.service
 ConditionPathExists=/opt/ikev2-l2tp-gui/telegram_bot.py
 
