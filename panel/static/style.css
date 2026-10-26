@@ -134,6 +134,111 @@ input,select,textarea{background:var(--input-bg)}
   .topbar-meta .copyable{display:none}
 }
 
+/* Dashboard layout repair: readable telemetry, natural page height and no clipped content. */
+body.page-dash{overflow:auto}
+body.page-dash .app-shell{min-height:100vh;height:auto;max-height:none;overflow:visible;display:block}
+body.page-dash .content{min-height:calc(100vh - 89px);overflow:visible;display:block;padding:24px 28px 48px;max-width:1600px}
+body.page-dash .topbar-meta>.stat-chip{display:none}
+body.page-dash .machine-strip{
+  display:grid;
+  grid-template-columns:minmax(145px,.8fr) repeat(3,78px) minmax(250px,1.5fr) minmax(290px,1.35fr);
+  align-items:center;
+  gap:14px;
+  min-height:132px;
+  padding:16px 18px;
+  margin-bottom:18px;
+  overflow:visible;
+  background:linear-gradient(145deg,var(--surface-raised),rgba(212,175,55,.035));
+  box-shadow:var(--shadow)
+}
+body.page-dash .machine-strip .ms-ip{
+  max-width:none;
+  min-height:44px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:9px 12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:var(--chip);
+  font-size:12px
+}
+body.page-dash .ms-gauge{width:72px;gap:3px}
+body.page-dash .ms-gauge svg{width:66px;height:61px}
+body.page-dash .machine-strip small{font-size:10px}
+body.page-dash .machine-strip b{font-size:12px}
+body.page-dash .ms-net{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(92px,1fr));
+  gap:8px;
+  overflow:visible
+}
+body.page-dash .machine-strip .ms-item{
+  min-height:42px;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px 10px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:var(--chip)
+}
+body.page-dash .ms-speed{
+  display:grid;
+  grid-template-columns:70px 70px minmax(110px,1fr);
+  align-items:center;
+  gap:8px;
+  padding-inline-start:14px;
+  min-width:0
+}
+body.page-dash .ms-speed button{min-height:40px;font-size:11px}
+body.page-dash #speed-line{grid-column:1/-1;max-width:none;text-align:center;font-size:10px}
+body.page-dash .dashboard-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);
+  grid-template-rows:auto;
+  gap:18px;
+  overflow:visible
+}
+body.page-dash .dashboard-grid>.panel{
+  min-height:260px;
+  overflow:visible;
+  display:flex;
+  flex-direction:column;
+  padding:22px
+}
+body.page-dash .dashboard-grid>.span-3{grid-column:auto}
+body.page-dash .panel-header{margin-bottom:18px}
+body.page-dash .online-list{align-content:flex-start;overflow:visible;gap:10px}
+body.page-dash .online-user{min-height:38px;padding:8px 12px;font-size:12px}
+body.page-dash .quick-actions{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;flex:1}
+body.page-dash .quick-actions a{min-height:82px;padding:16px}
+body.page-dash .quick-actions b{font-size:13px}
+
+@media(max-width:1350px){
+  body.page-dash .machine-strip{grid-template-columns:minmax(130px,.8fr) repeat(3,70px) minmax(220px,1.4fr)}
+  body.page-dash .ms-speed{grid-column:1/-1;border-inline-start:0;border-top:1px solid var(--line);padding:13px 0 0;grid-template-columns:70px 70px minmax(120px,auto) 1fr}
+  body.page-dash #speed-line{grid-column:auto;text-align:start}
+}
+@media(max-width:1000px){
+  body.page-dash .content{padding:18px}
+  body.page-dash .machine-strip{grid-template-columns:repeat(3,1fr);gap:12px}
+  body.page-dash .machine-strip .ms-ip{grid-column:1/-1}
+  body.page-dash .ms-net{grid-column:1/-1}
+  body.page-dash .ms-speed{grid-column:1/-1}
+  body.page-dash .dashboard-grid{grid-template-columns:1fr}
+  body.page-dash .dashboard-grid>.panel{min-height:auto}
+}
+@media(max-width:600px){
+  body.page-dash .content{padding:14px 12px 38px}
+  body.page-dash .machine-strip{grid-template-columns:repeat(3,1fr);padding:14px 12px}
+  body.page-dash .ms-net{grid-template-columns:1fr 1fr}
+  body.page-dash .ms-speed{grid-template-columns:1fr 1fr}
+  body.page-dash .ms-speed button{grid-column:1/-1}
+  body.page-dash #speed-line{grid-column:1/-1;text-align:center}
+  body.page-dash .quick-actions{grid-template-columns:1fr}
+  body.page-dash .quick-actions a{min-height:64px}
+}
+
 @media(max-width:600px){
   .topbar-meta{display:flex;width:100%;justify-content:flex-start}
   .topbar{flex-wrap:wrap}
