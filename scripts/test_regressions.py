@@ -264,6 +264,13 @@ class ProcessTests(unittest.TestCase):
         self.assertIn('systemd-run --unit="$update_unit" --collect', deploy)
         self.assertNotIn("systemd-run --unit=multivpn-update ", deploy)
 
+    def test_dashboard_is_scrollable_and_uses_a_fresh_asset_version(self):
+        css = (ROOT / "panel" / "static" / "style.css").read_text(encoding="utf-8")
+        base = (ROOT / "panel" / "templates" / "base.html").read_text(encoding="utf-8")
+        self.assertIn("body.page-dash{overflow:auto}", css)
+        self.assertIn("height:auto;max-height:none;overflow:visible", css)
+        self.assertIn("20261026-dashboard-v2", base)
+
     def test_processes_do_not_lose_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "counter.json"
