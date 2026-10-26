@@ -19,10 +19,11 @@ install -d -m 0700 "$DATA_DIR"
 worker="$(mktemp "$DATA_DIR/update-worker.XXXXXX")"
 source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install -m 0700 "$source_dir/update-worker.sh" "$worker"
-systemd-run --unit=multivpn-update --collect --property=Type=exec \
+update_unit="multivpn-update-$(date +%s)-$$"
+systemd-run --unit="$update_unit" --collect --property=Type=exec \
   --setenv=IKEGUI_APP="$APP_DIR" --setenv=IKEGUI_DATA="$DATA_DIR" \
   --setenv=IKEGUI_REPO="$REPO_DIR" /bin/bash "$worker" "$BRANCH" || {
     rm -f "$worker"; exit 1;
   }
-echo "panel update queued"
+echo "panel update queued ($update_unit)"
 exit 0
