@@ -258,6 +258,12 @@ class ProcessTests(unittest.TestCase):
         self.assertLess(copy_index, restart_index)
         self.assertLess(restart_index, health_index)
 
+    def test_in_panel_updater_uses_a_unique_transient_unit(self):
+        deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+        self.assertIn('update_unit="multivpn-update-$(date +%s)-$$"', deploy)
+        self.assertIn('systemd-run --unit="$update_unit" --collect', deploy)
+        self.assertNotIn("systemd-run --unit=multivpn-update ", deploy)
+
     def test_processes_do_not_lose_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "counter.json"
