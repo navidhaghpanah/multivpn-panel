@@ -110,6 +110,28 @@ class AccountTests(unittest.TestCase):
         self.A.sample_traffic()
         self.assertFalse(any("IKEv2-EAP[7]" in cmd or "IKEv2-EAP[8]" in cmd for cmd in self.commands))
 
+    def test_collector_drops_persistent_duplicate_after_grace_period(self):
+        sessions = [
+            {"user": "alice", "proto": "IKEv2", "id": "7", "conn": "IKEv2-EAP", "order": 7, "bytes_total": 0},
+            {"user": "ALICE", "proto": "IKEv2", "id": "8", "conn": "IKEv2-EAP", "order": 8, "bytes_total": 0},
+        ]
+        self.A.parse_sessions = lambda: sessions
+        with patch.object(self.A.time, "time", return_value=1000):
+            self.A.sample_traffic()
+        self.assertFalse(any("IKEv2-EAP[7]" in cmd for cmd in self.commands))
+        with patch.object(self.A.time, "time", return_value=1061):
+            self.A.sample_traffic()
+        self.assertTrue(any("IKEv2-EAP[7]" in cmd for cmd in self.commands))
+        self.assertFalse(any("IKEv2-EAP[8]" in cmd for cmd in self.commands))
+
+    def test_traffic_uses_canonical_username_and_sums_parallel_sessions(self):
+        self.A.parse_sessions = lambda: [
+            {"user": "ALICE", "proto": "IKEv2", "id": "7", "conn": "IKEv2-EAP", "order": 7, "bytes_total": 100},
+            {"user": "alice", "proto": "IKEv2", "id": "8", "conn": "IKEv2-EAP", "order": 8, "bytes_total": 200},
+        ]
+        self.A.sample_traffic()
+        self.assertEqual(self.A.load_users()["alice"]["used_bytes"], 300)
+
     def test_manual_cleanup_still_enforces_session_limit(self):
         sessions = [
             {"user": "alice", "proto": "IKEv2", "id": "7", "conn": "IKEv2-EAP", "order": 7},
@@ -160,6 +182,11 @@ class AccountTests(unittest.TestCase):
         (self.A.DATA_DIR / "ppp-acct.log").write_text("alice 10.8.3.1 100 50 200 ppp0 100\n")
         self.A.sample_traffic()
         self.assertEqual(self.A.load_users()["alice"]["used_bytes"], 50)
+
+    def test_ppp_final_traffic_uses_canonical_username(self):
+        (self.A.DATA_DIR / "ppp-acct.log").write_text("ALICE 10.8.3.1 100 50 200 ppp0 100\n")
+        self.A.sample_traffic()
+        self.assertEqual(self.A.load_users()["alice"]["used_bytes"], 150)
 
     def test_password_rotation_revokes_other_browser(self):
         c1, c2 = self.client(), self.client()

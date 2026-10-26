@@ -1323,6 +1323,17 @@ def find_user_record(users, identity):
     return None
 
 
+def find_user_name(users, identity):
+    """Return the canonical users.json key for an authenticated identity."""
+    if identity in users:
+        return identity
+    folded = str(identity or "").casefold()
+    for name in users:
+        if name.casefold() == folded:
+            return name
+    return None
+
+
 @app.before_request
 def invalidate_stale_sessions():
     if session.get("ok") and session.get("auth_version", 0) != load_admin().get("auth_version", 0):
@@ -2322,6 +2333,58 @@ def cleanup_excess_sessions(sessions=None):
     return terminated
 
 
+def enforce_session_limits(sessions, snap, now=None, grace_seconds=60):
+    """Enforce per-user device caps after a reconnect-safe grace period.
+
+    Windows may briefly leave an older IKE SA alive while roaming or
+    reconnecting.  A duplicate must therefore survive several collector
+    cycles before it is terminated.  Identities are grouped case-insensitively
+    so alternate casing cannot bypass the configured limit.
+    """
+    now = time.time() if now is None else float(now)
+    limit = max_sessions_per_user()
+    prefix = "__excess_session:"
+    previous_markers = {key: value for key, value in snap.items() if key.startswith(prefix)}
+    for key in list(snap):
+        if key.startswith(prefix):
+            snap.pop(key, None)
+
+    grouped = {}
+    for session_info in sessions:
+        name = str(session_info.get("user") or "")
+        if not name or session_info.get("proto") not in ("IKEv2", "L2TP"):
+            continue
+        if session_info.get("conn") == "L2TP-PSK":
+            continue
+        try:
+            age_key = int(session_info.get("order") or session_info.get("started") or session_info.get("id"))
+        except (TypeError, ValueError):
+            age_key = 0
+        grouped.setdefault(name.casefold(), []).append((age_key, session_info))
+
+    terminated = []
+    for identity, active in grouped.items():
+        active.sort(key=lambda item: item[0], reverse=True)
+        for _, old_session in active[limit:]:
+            marker = prefix + ":".join((
+                identity,
+                str(old_session.get("proto") or ""),
+                str(old_session.get("conn") or ""),
+                str(old_session.get("id") or ""),
+                str(old_session.get("started") or ""),
+            ))
+            first_seen = float(previous_markers.get(marker, now))
+            if now - first_seen < grace_seconds:
+                snap[marker] = first_seen
+                continue
+            target = terminate_user_session(old_session)
+            if target:
+                terminated.append({"user": identity, "target": target})
+            else:
+                snap[marker] = first_seen
+    return terminated
+
+
 def terminate_ike_session(session_info):
     target = "%s[%s]" % (session_info.get("conn") or "IKEv2-EAP", session_info["id"])
     if STROKE.is_file():
@@ -2380,9 +2443,8 @@ def sync_accounts(users=None):
 def sample_traffic():
     sessions = parse_sessions()
     # Windows can briefly keep overlapping IKE SAs while reconnecting or
-    # changing networks. Automatically dropping the older SA from this
-    # 20-second collector can also tear down the active Windows tunnel.
-    # Session-limit cleanup therefore remains an explicit operator action.
+    # changing networks. Persistent duplicates are handled below only after a
+    # grace period, so roaming does not disable the configured device cap.
     # TCP socket count is not a device count. Do not kill ordinary parallel
     # Shadowsocks connections. Proxy device caps are not currently supported.
     with _lock:
@@ -2392,8 +2454,8 @@ def sample_traffic():
                     if k.startswith("__") or k.split(":", 1)[0] in users}
         changed = False
         for s in sessions:
-            name = s.get("user") or ""
-            if name not in users:
+            name = find_user_name(users, s.get("user"))
+            if name is None:
                 continue
             total = int(s.get("bytes_total") or 0)
             key = "%s:%s:%s:%s" % (name, s.get("proto"), s.get("id"), s.get("started", ""))
@@ -2422,8 +2484,10 @@ def sample_traffic():
                             snap.pop(key)
                 new_snap["__epoch_" + proto] = epoch
             for name, total in totals.items():
-                if name not in users:
+                canonical_name = find_user_name(users, name)
+                if canonical_name is None:
                     continue
+                name = canonical_name
                 key = "%s:%s" % (name, proto)
                 prev = int(snap.get(key, 0))
                 delta = total - prev if total >= prev else total
@@ -2431,6 +2495,7 @@ def sample_traffic():
                     users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + delta
                     changed = True
                 new_snap[key] = total
+        enforce_session_limits(sessions, new_snap)
         save_users(users)
         save_json(SNAP_FILE, new_snap)
         # Also reconcile deleted/disabled accounts on upgrade and every poll.
@@ -2455,8 +2520,11 @@ def account_ppp_disconnects(users, snap):
                     break
                 fields = line.decode("utf-8", errors="replace").split()
                 # New hook: name IP rx tx end-time interface start-time.
-                if len(fields) == 7 and fields[0] in users:
-                    name, _, rx, tx, _, interface, started = fields
+                if len(fields) == 7:
+                    raw_name, _, rx, tx, _, interface, started = fields
+                    name = find_user_name(users, raw_name)
+                    if name is None:
+                        continue
                     try:
                         total = int(rx) + int(tx)
                         key = "%s:L2TP:%s:%s" % (name, interface, started)
@@ -2581,7 +2649,12 @@ def dashboard_payload():
     sessions = parse_sessions()
     if not isinstance(sessions, list):
         sessions = []
-    online = sorted({s["user"] for s in sessions if isinstance(s, dict) and s.get("user")})
+    online = sorted({
+        canonical
+        for s in sessions if isinstance(s, dict) and s.get("user")
+        for canonical in [find_user_name(users, s.get("user"))]
+        if canonical is not None
+    })
     hs = host_stats()
     rows = []
     for name, u in sorted(users.items()):
