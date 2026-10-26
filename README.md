@@ -1,4 +1,4 @@
-# NH MultiVPN
+# SirGSM VPN Panel
 
 پنل مدیریت VPN برای Ubuntu ۲۲.۰۴ / ۲۴.۰۴.
 
@@ -304,7 +304,7 @@ Validation: `bash scripts/selftest.sh` and `python3 scripts/test_regressions.py`
 
 ## Authors
 
-Navid Haghpanah
+Navid Haghbayan
 
 Project page: GitHub Pages on the `docs/` branch.
 
