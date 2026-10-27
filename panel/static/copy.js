@@ -100,8 +100,10 @@ document.addEventListener('click', event => {
     document.getElementById('edit-user-quota').value = editButton.dataset.quota;
     const ike = document.getElementById('edit-user-ikev2');
     const l2 = document.getElementById('edit-user-l2tp');
+    const wireguard = document.getElementById('edit-user-wireguard');
     if (ike) ike.checked = editButton.dataset.ikev2 !== '0';
     if (l2) l2.checked = editButton.dataset.l2tp !== '0';
+    if (wireguard) wireguard.checked = editButton.dataset.wireguard === '1';
     document.getElementById('edit-user-ss').checked = editButton.dataset.ss === '1';
     document.getElementById('edit-user-hy').checked = editButton.dataset.hy === '1';
     document.getElementById('edit-user-vless').checked = editButton.dataset.vless === '1';

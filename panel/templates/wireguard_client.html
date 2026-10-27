@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel wireguard-admin-card">
+  <header class="panel-header"><div><span class="recommended">WireGuard</span><h2>{{ name }}</h2><p>فایل و QR اختصاصی این کاربر از landing page قابل دریافت است.</p></div></header>
+  <div class="summary-strip"><div><span>Client IP</span><b dir="ltr">{{ wg_ip }}</b></div><div><span>UDP Port</span><b>51820</b></div></div>
+  <label><span>لینک اختصاصی کاربر</span><input class="copyable" dir="ltr" readonly value="{{ connect_url }}"></label>
+  <div class="dialog-actions"><a class="primary-button" href="{{ connect_url }}" target="_blank" rel="noopener">بازکردن صفحه اتصال</a><a class="secondary-button" href="{{ url_for('public_wireguard_config', name=name, token=token) }}">دانلود فایل</a></div>
+</section>
+{% endblock %}

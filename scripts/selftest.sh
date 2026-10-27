@@ -28,6 +28,8 @@ panel/templates/login.html
 panel/templates/base.html
 panel/templates/index.html
 panel/templates/users.html
+panel/templates/connect.html
+panel/templates/wireguard_client.html
 panel/templates/sessions.html
 panel/templates/clients.html
 panel/templates/settings.html

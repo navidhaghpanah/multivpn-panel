@@ -219,6 +219,28 @@ class AccountTests(unittest.TestCase):
     def test_https_proxy_link(self):
         self.assertTrue(self.A.http_proxy_uri("alice", self.A.load_users()["alice"], self.A.load_config()).startswith("https://"))
 
+    def test_public_connect_requires_the_users_token(self):
+        users = self.A.load_users()
+        token = "landing-test-token"
+        users["alice"]["sub_token"] = token
+        self.A.save_users(users)
+        c = self.A.app.test_client()
+        self.assertEqual(c.get("/connect/alice/wrong-token").status_code, 404)
+        response = c.get("/connect/alice/" + token)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("اتصال alice", response.get_data(as_text=True))
+
+    def test_wireguard_client_is_full_tunnel(self):
+        users = self.A.load_users()
+        user = users["alice"]
+        user.update({"wireguard_enabled": True, "wg_private": "client-private", "wg_ip": "10.8.4.2"})
+        with patch.object(self.A, "_wg_public_key", return_value="server-public"):
+            self.A.WG_CONFIG.write_text("[Interface]\nPrivateKey = server-private\n")
+            payload = self.A.wireguard_client_config("alice", user)
+        self.assertIn("Address = 10.8.4.2/32", payload)
+        self.assertIn("AllowedIPs = 0.0.0.0/0", payload)
+        self.assertIn("Endpoint = vpn.example.com:51820", payload)
+
     def test_mtg_rotation_and_unchanged_config(self):
         source = (ROOT / "panel/app.py").read_text(encoding="utf-8")
         import ast
