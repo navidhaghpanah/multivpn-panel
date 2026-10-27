@@ -2926,6 +2926,14 @@ def client_domain():
     return (cfg.get("domain") or "").strip()
 
 
+def subscription_url(name, token, cfg=None):
+    cfg = cfg or load_config()
+    host = (cfg.get("domain") or cfg.get("public_ip") or "").strip()
+    if not host:
+        host = request.host.split(":", 1)[0]
+    return "https://" + host + url_for("subscription", name=name, token=token)
+
+
 def stamp_client_text(text, domain):
     vpn_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, domain + ":vpn")).upper()
     payload_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, domain + ":profile")).upper()
@@ -4216,7 +4224,7 @@ def clients_sub(name):
             return redirect(url_for("clients_page"))
         token = ensure_sub_token(users, name)
     cfg = load_config()
-    url = "https://" + request.host + url_for("subscription", name=name, token=token)
+    url = subscription_url(name, token, cfg)
     d = dashboard_payload()
     d["admin_user"] = load_admin().get("user") or ""
     d.update(
@@ -4243,7 +4251,7 @@ def clients_sub_qr(name):
         if not u:
             return ("", 404)
         token = ensure_sub_token(users, name)
-    url = "https://" + request.host + url_for("subscription", name=name, token=token)
+    url = subscription_url(name, token)
     png = qr_png(url)
     return (png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
 
@@ -4725,7 +4733,7 @@ def settings_admin():
     save_admin(data)
     session.clear()
     flash_t("admin_ok")
-    return redirect(url_for("settings"))
+    return redirect(url_for("login"))
 
 
 

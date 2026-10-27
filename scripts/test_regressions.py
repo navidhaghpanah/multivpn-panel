@@ -191,8 +191,16 @@ class AccountTests(unittest.TestCase):
     def test_password_rotation_revokes_other_browser(self):
         c1, c2 = self.client(), self.client()
         csrf = smoke._csrf(c1.get("/settings").get_data(as_text=True))
-        self.assertEqual(c1.post("/settings/admin", data={"password": "newSecurePassword123", "csrf_token": csrf}).status_code, 302)
+        response = c1.post("/settings/admin", data={"password": "newSecurePassword123", "csrf_token": csrf})
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/login"))
         self.assertEqual(c2.get("/api/status").status_code, 401)
+
+    def test_subscription_link_uses_configured_domain_not_host_header(self):
+        with self.A.app.test_request_context("/", headers={"Host": "attacker.invalid"}):
+            url = self.A.subscription_url("alice", "test-token")
+        self.assertEqual(url, "https://vpn.example.com/sub/alice/test-token")
+        self.assertNotIn("attacker.invalid", url)
 
     def test_update_failure_is_not_reported_as_success(self):
         with patch.object(Path, "is_file", return_value=True), patch.object(self.A.subprocess, "run") as run:
