@@ -230,6 +230,20 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("اتصال alice", response.get_data(as_text=True))
 
+    def test_dashboard_backfills_landing_tokens_for_legacy_users(self):
+        users = self.A.load_users()
+        users["alice"].pop("sub_token", None)
+        self.A.save_users(users)
+        stats = {"cpu": 0, "mem_pct": 0, "mem_used": 0, "mem_total": 0,
+                 "disk_pct": 0, "load1": 0, "uptime": 0, "net_iface": "eth0",
+                 "net_rx": 0, "net_tx": 0, "net_down_bps": 0, "net_up_bps": 0}
+        with patch.object(self.A, "parse_sessions", return_value=[]), patch.object(
+            self.A, "host_stats", return_value=stats
+        ):
+            payload = self.A.dashboard_payload()
+        self.assertTrue(payload["users"][0]["sub_token"])
+        self.assertEqual(payload["users"][0]["sub_token"], self.A.load_users()["alice"]["sub_token"])
+
     def test_wireguard_client_is_full_tunnel(self):
         users = self.A.load_users()
         user = users["alice"]

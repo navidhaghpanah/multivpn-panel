@@ -2768,6 +2768,13 @@ def dashboard_payload():
     users = import_secrets_if_needed()
     if not isinstance(users, dict):
         users = {}
+    tokens_changed = False
+    for user in users.values():
+        if isinstance(user, dict) and not user.get("sub_token"):
+            user["sub_token"] = new_sub_token()
+            tokens_changed = True
+    if tokens_changed:
+        save_users(users)
     sessions = parse_sessions()
     if not isinstance(sessions, list):
         sessions = []
