@@ -61,6 +61,10 @@ IPSEC_SECRETS = Path("/etc/ipsec.secrets")
 CHAP_SECRETS = Path("/etc/ppp/chap-secrets")
 IPSEC_CONF = Path("/etc/ipsec.conf")
 PPP_OPTS = Path("/etc/ppp/options.xl2tpd")
+WG_CONFIG = Path("/etc/wireguard/wg0.conf")
+WG_CLIENTS_DIR = Path("/etc/wireguard/clients")
+WG_SUBNET = ipaddress.ip_network("10.8.4.0/24")
+WG_PORT = 51820
 
 DNS_PRESETS = (
     ("shecan", "Shecan", ("178.22.122.100", "185.51.200.2")),
@@ -1566,6 +1570,96 @@ def new_sub_token():
     return secrets.token_urlsafe(24)
 
 
+def _wg_public_key(private_key):
+    proc = subprocess.run(
+        ["wg", "pubkey"], input=private_key + "\n", capture_output=True,
+        text=True, timeout=5, check=True,
+    )
+    return proc.stdout.strip()
+
+
+def new_wg_keypair():
+    private_key = run_checked(["wg", "genkey"], timeout=5).strip()
+    if not private_key:
+        raise RuntimeError("WireGuard key generation failed")
+    return private_key, _wg_public_key(private_key)
+
+
+def allocate_wg_ip(users):
+    used = {str(u.get("wg_ip") or "") for u in users.values() if isinstance(u, dict)}
+    for host in list(WG_SUBNET.hosts())[1:]:
+        if str(host) not in used:
+            return str(host)
+    raise ValueError("No free WireGuard address")
+
+
+def ensure_wg_user(users, name):
+    user = users[name]
+    if not user.get("wg_private") or not user.get("wg_public"):
+        user["wg_private"], user["wg_public"] = new_wg_keypair()
+    if not user.get("wg_ip"):
+        user["wg_ip"] = allocate_wg_ip(users)
+
+
+def _wg_interface_block(cfg):
+    if WG_CONFIG.is_file():
+        current = WG_CONFIG.read_text(encoding="utf-8", errors="replace")
+        block = current.split("\n[Peer]", 1)[0].rstrip()
+        if block.startswith("[Interface]"):
+            return block
+    private_key, _ = new_wg_keypair()
+    public_ip = (cfg.get("public_ip") or "").strip()
+    iface = (cfg.get("interface") or "eth0").strip() or "eth0"
+    return "\n".join((
+        "[Interface]", "Address = 10.8.4.1/24", "ListenPort = %d" % WG_PORT,
+        "PrivateKey = " + private_key, "MTU = 1280",
+        "PostUp = iptables -t nat -C POSTROUTING -s 10.8.4.0/24 -o %s -j SNAT --to-source %s 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.8.4.0/24 -o %s -j SNAT --to-source %s; iptables -C FORWARD -s 10.8.4.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.4.0/24 -j ACCEPT; iptables -C FORWARD -d 10.8.4.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.4.0/24 -j ACCEPT" % (iface, public_ip, iface, public_ip),
+        "PostDown = iptables -t nat -D POSTROUTING -s 10.8.4.0/24 -o %s -j SNAT --to-source %s 2>/dev/null || true; iptables -D FORWARD -s 10.8.4.0/24 -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -d 10.8.4.0/24 -j ACCEPT 2>/dev/null || true" % (iface, public_ip),
+    ))
+
+
+def write_wireguard_config(users=None):
+    users = load_users() if users is None else users
+    if not WG_CONFIG.exists() and not any(u.get("wireguard_enabled") for u in users.values()):
+        return
+    cfg = load_config()
+    peers = []
+    for name, user in sorted(users.items()):
+        if user_blocked(user) or not user.get("wireguard_enabled"):
+            continue
+        if not user.get("wg_public") or not user.get("wg_ip"):
+            continue
+        peers.append("\n".join((
+            "[Peer]", "# " + name, "PublicKey = " + user["wg_public"],
+            "AllowedIPs = %s/32" % user["wg_ip"],
+        )))
+    WG_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    save_private_text(WG_CONFIG, _wg_interface_block(cfg) + "\n\n" + "\n\n".join(peers) + "\n")
+    try:
+        os.chmod(WG_CONFIG, 0o600)
+    except OSError:
+        pass
+    run(["systemctl", "enable", "--now", "wg-quick@wg0"], timeout=20)
+    run(["systemctl", "restart", "wg-quick@wg0"], timeout=20)
+
+
+def wireguard_client_config(name, user, cfg=None):
+    cfg = cfg or load_config()
+    endpoint = (cfg.get("domain") or cfg.get("public_ip") or "").strip()
+    dns = ", ".join(cfg.get("dns") or ["1.1.1.1", "1.0.0.1"])
+    server_private = ""
+    if WG_CONFIG.is_file():
+        match = re.search(r"(?m)^PrivateKey\s*=\s*(\S+)", WG_CONFIG.read_text(encoding="utf-8", errors="replace"))
+        server_private = match.group(1) if match else ""
+    server_public = _wg_public_key(server_private) if server_private else ""
+    return "\n".join((
+        "[Interface]", "PrivateKey = " + (user.get("wg_private") or ""),
+        "Address = %s/32" % (user.get("wg_ip") or ""), "DNS = " + dns, "MTU = 1280", "",
+        "[Peer]", "PublicKey = " + server_public, "Endpoint = %s:%d" % (endpoint, WG_PORT),
+        "AllowedIPs = 0.0.0.0/0", "PersistentKeepalive = 25", "",
+    ))
+
+
 def mtg_allowed(u):
     # Shared mtg cannot attribute usage. Do not let metered accounts bypass
     # their quota through an unmetered shared secret.
@@ -2291,6 +2385,27 @@ def parse_sessions():
                             "proto": "L2TP",
                         }
                     )
+    users = load_users()
+    by_key = {u.get("wg_public"): name for name, u in users.items() if u.get("wg_public")}
+    dump = run(["wg", "show", "wg0", "dump"], timeout=5)
+    for line in dump.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 8 or parts[0] not in by_key:
+            continue
+        try:
+            handshake, rx, tx = int(parts[4]), int(parts[5]), int(parts[6])
+        except ValueError:
+            continue
+        if not handshake or time.time() - handshake > 180:
+            continue
+        sessions.append({
+            "conn": "WireGuard", "id": parts[0][:12], "public_key": parts[0],
+            "started": str(handshake), "order": handshake, "uptime": "",
+            "remote": parts[2].rsplit(":", 1)[0], "user": by_key[parts[0]],
+            "vip": parts[3].split(",", 1)[0].replace("/32", ""),
+            "bytes_in": rx, "bytes_out": tx, "bytes_total": rx + tx,
+            "proto": "WireGuard",
+        })
     return sessions
 
 
@@ -2395,6 +2510,9 @@ def terminate_ike_session(session_info):
 
 
 def terminate_user_session(s):
+    if s.get("proto") == "WireGuard" and s.get("public_key"):
+        run(["wg", "set", "wg0", "peer", s["public_key"], "remove"], timeout=5)
+        return s["public_key"][:12]
     if s.get("conn") != "L2TP-PPP":
         return terminate_ike_session(s)
     interface = str(s.get("id") or "")
@@ -2418,7 +2536,10 @@ def revoke_invalid_sessions(users, sessions=None):
         if not name:
             continue
         u = find_user_record(users, name)
-        field = "ikev2_enabled" if s.get("proto") == "IKEv2" else "l2tp_enabled"
+        field = {"IKEv2": "ikev2_enabled", "L2TP": "l2tp_enabled",
+                 "WireGuard": "wireguard_enabled"}.get(s.get("proto"))
+        if not field:
+            continue
         # strongSwan identity formatting can differ from the panel key. An
         # unknown identity is therefore not proof that an account was deleted.
         # Only an explicit deletion tombstone may revoke an unknown identity.
@@ -2436,6 +2557,7 @@ def sync_accounts(users=None):
     write_xray_ss_config(users)
     write_hysteria_config(users)
     write_mtg_config(users)
+    write_wireguard_config(users)
     app._accounts_ready = True
 
 
@@ -2686,6 +2808,7 @@ def dashboard_payload():
                     (fa(gtrim(q)) if current_lang() == "fa" else gtrim(q)) + " GB"
                 ),
                 "created": u.get("created") or "",
+                "sub_token": u.get("sub_token") or "",
                 "online": name in online,
                 "block": block,
                 "proto": ses["proto"] if ses else "",
@@ -2694,6 +2817,7 @@ def dashboard_payload():
                 "uptime": ses["uptime"] if ses else "",
                 "ikev2_enabled": flag_on(u, "ikev2_enabled", True),
                 "l2tp_enabled": flag_on(u, "l2tp_enabled", True),
+                "wireguard_enabled": bool(u.get("wireguard_enabled")),
                 "ss_enabled": bool(u.get("ss_enabled")),
                 "hy_enabled": bool(u.get("hy_enabled")),
                 "vless_enabled": bool(u.get("vless_enabled")),
@@ -2932,6 +3056,14 @@ def subscription_url(name, token, cfg=None):
     if not host:
         host = request.host.split(":", 1)[0]
     return "https://" + host + url_for("subscription", name=name, token=token)
+
+
+def public_connection_url(name, token, cfg=None):
+    cfg = cfg or load_config()
+    host = (cfg.get("domain") or cfg.get("public_ip") or "").strip()
+    if not host:
+        host = request.host.split(":", 1)[0]
+    return "https://" + host + url_for("public_connect", name=name, token=token)
 
 
 def stamp_client_text(text, domain):
@@ -4165,6 +4297,73 @@ def clients_mtg_qr(name):
     return (png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
 
 
+def public_user_by_token(name, token):
+    if not USER_RE.fullmatch(name or ""):
+        return None
+    user = load_users().get(name)
+    expected = (user or {}).get("sub_token") or ""
+    if not user or user_blocked(user) or not expected or len(token or "") != len(expected):
+        return None
+    return user if secrets.compare_digest(token or "", expected) else None
+
+
+@app.route("/connect/<name>/<token>")
+def public_connect(name, token):
+    user = public_user_by_token(name, token)
+    if not user:
+        return ("", 404)
+    cfg = load_config()
+    protocols = []
+    if flag_on(user, "ikev2_enabled", True): protocols.append("IKEv2")
+    if flag_on(user, "l2tp_enabled", True): protocols.append("L2TP/IPsec")
+    if user.get("wireguard_enabled"): protocols.append("WireGuard")
+    if user.get("vless_enabled"): protocols.append("VLESS Reality")
+    if user.get("hy_enabled"): protocols.append("Hysteria2")
+    if user.get("ss_enabled"): protocols.append("Shadowsocks")
+    if user.get("vmess_enabled"): protocols.append("VMess")
+    return render_template(
+        "connect.html", name=name, token=token, user=user, cfg=cfg,
+        protocols=protocols, host=(cfg.get("domain") or cfg.get("public_ip") or "").strip(),
+        psk=(cfg.get("psk") or ""), lang=current_lang(), theme=current_theme(),
+    )
+
+
+@app.route("/connect/<name>/<token>/wireguard.conf")
+def public_wireguard_config(name, token):
+    user = public_user_by_token(name, token)
+    if not user or not user.get("wireguard_enabled"):
+        return ("", 404)
+    payload = wireguard_client_config(name, user).encode("utf-8")
+    return send_file(
+        io.BytesIO(payload), mimetype="text/plain; charset=utf-8", as_attachment=True,
+        download_name="%s-wireguard.conf" % name,
+    )
+
+
+@app.route("/connect/<name>/<token>/wireguard-qr.png")
+def public_wireguard_qr(name, token):
+    user = public_user_by_token(name, token)
+    if not user or not user.get("wireguard_enabled"):
+        return ("", 404)
+    return (qr_png(wireguard_client_config(name, user)), 200,
+            {"Content-Type": "image/png", "Cache-Control": "no-store"})
+
+
+@app.route("/clients/wireguard/<name>")
+@login_required
+def clients_wireguard(name):
+    user = load_users().get(name)
+    if not user or not user.get("wireguard_enabled"):
+        return ("", 404)
+    cfg = load_config()
+    token = user.get("sub_token") or ""
+    return render_template(
+        "wireguard_client.html", **page_chrome("clients", "clients_title", "clients_sub"),
+        name=name, wg_ip=user.get("wg_ip") or "", token=token,
+        connect_url=public_connection_url(name, token, cfg),
+    )
+
+
 @app.route("/sub/<name>/<token>")
 def subscription(name, token):
     # Public by design — this is what proxy client apps auto-refresh from,
@@ -4458,6 +4657,7 @@ def users_add():
     vmess_enabled = request.form.get("vmess_enabled") == "1"
     http_enabled = request.form.get("http_enabled") == "1"
     mtg_enabled = request.form.get("mtg_enabled") == "1" or request.form.get("mtp") == "1"
+    wireguard_enabled = request.form.get("wireguard_enabled") == "1"
     if not USER_RE.match(name):
         flash_t("user_name_bad")
         return redirect(url_for("users_page"))
@@ -4497,12 +4697,15 @@ def users_add():
             "vmess_enabled": vmess_enabled,
             "http_enabled": http_enabled,
             "mtg_enabled": mtg_enabled,
+            "wireguard_enabled": wireguard_enabled,
             "ss_key": new_ss_key() if ss_enabled else "",
             "ss_port": allocate_ss_port() if ss_enabled else None,
             "vless_uuid": new_vless_uuid() if vless_enabled else "",
             "vmess_uuid": new_vmess_uuid() if vmess_enabled else "",
             "sub_token": new_sub_token(),
         }
+        if wireguard_enabled:
+            ensure_wg_user(users, name)
         forget_deleted_user(name)
         save_users(users)
         sync_accounts(users)
@@ -4511,6 +4714,8 @@ def users_add():
         proto_note.append("IKEv2")
     if l2tp_enabled:
         proto_note.append("L2TP")
+    if wireguard_enabled:
+        proto_note.append("WireGuard")
     if ss_enabled:
         proto_note.append("Shadowsocks")
     if vless_enabled:
@@ -4546,6 +4751,7 @@ def users_update():
     vmess_enabled = request.form.get("vmess_enabled") == "1"
     http_enabled = request.form.get("http_enabled") == "1"
     mtg_enabled = request.form.get("mtg_enabled") == "1" or request.form.get("mtp") == "1"
+    wireguard_enabled = request.form.get("wireguard_enabled") == "1"
     if not USER_RE.match(name):
         flash_t("user_bad")
         return redirect(url_for("users_page"))
@@ -4585,6 +4791,7 @@ def users_update():
         users[name]["vmess_enabled"] = vmess_enabled
         users[name]["http_enabled"] = http_enabled
         users[name]["mtg_enabled"] = mtg_enabled
+        users[name]["wireguard_enabled"] = wireguard_enabled
         if ss_enabled and not users[name].get("ss_key"):
             users[name]["ss_key"] = new_ss_key()
         if ss_enabled and not users[name].get("ss_port"):
@@ -4593,6 +4800,8 @@ def users_update():
             users[name]["vless_uuid"] = new_vless_uuid()
         if vmess_enabled and not users[name].get("vmess_uuid"):
             users[name]["vmess_uuid"] = new_vmess_uuid()
+        if wireguard_enabled:
+            ensure_wg_user(users, name)
         save_users(users)
         sync_accounts(users)
     flash_t("user_saved", name=name)
@@ -4684,7 +4893,7 @@ def settings_domain():
 @csrf_required
 def settings_psk():
     psk = (request.form.get("psk") or "").strip()
-    if not safe_secret(psk, 16, 128):
+    if not safe_secret(psk, 12, 128):
         flash_t("psk_bad")
         return redirect(url_for("settings"))
     with _lock:
@@ -5051,7 +5260,7 @@ def validate_restored_user(name, u):
             raise ValueError(field)
     if u.get("expires"):
         date.fromisoformat(u["expires"])
-    for field in ("enabled", "ikev2_enabled", "l2tp_enabled", "ss_enabled",
+    for field in ("enabled", "ikev2_enabled", "l2tp_enabled", "wireguard_enabled", "ss_enabled",
                   "hy_enabled", "vless_enabled", "vmess_enabled", "http_enabled", "mtg_enabled"):
         if field in u and not isinstance(u[field], bool):
             raise ValueError(field)
@@ -5070,7 +5279,7 @@ def validate_restored_config(cfg):
         raise ValueError("domain")
     if domain != (load_config().get("domain") or ""):
         raise ValueError("Change domain through Settings before restoring this backup")
-    if cfg.get("psk") and not safe_secret(cfg["psk"], 16, 128):
+    if cfg.get("psk") and not safe_secret(cfg["psk"], 12, 128):
         raise ValueError("psk")
     for field in ("http_port", "hy_port", "mtg_port", "vless_port", "vmess_port", "ss_next_port"):
         if cfg.get(field) is not None and not 1 <= int(cfg[field]) <= 65535:

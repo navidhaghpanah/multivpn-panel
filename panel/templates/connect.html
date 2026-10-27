@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="{{ theme }}">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>اتصال {{ name }} — SirGSM VPN</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700;800&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261028-wireguard-landing') }}">
+</head>
+<body class="connect-page">
+<main class="connect-shell">
+  <header class="connect-hero">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="SirGSM VPN" width="64" height="64">
+    <div><span class="recommended">لینک اختصاصی و امن</span><h1>اتصال {{ name }}</h1><p>پروتکل مناسب را انتخاب کن و راهنمای همان گزینه را دنبال کن.</p></div>
+  </header>
+  <section class="connect-security-note" role="note">این صفحه شامل اطلاعات اتصال شماست؛ لینک را برای دیگران نفرست.</section>
+  <nav class="connect-protocols" aria-label="پروتکل‌های فعال">
+    {% for protocol in protocols %}<a href="#{{ 'wireguard' if protocol == 'WireGuard' else 'manual' }}">{{ protocol }}</a>{% endfor %}
+  </nav>
+
+  {% if user.wireguard_enabled %}
+  <section class="connect-card featured" id="wireguard">
+    <div class="connect-card-copy"><span class="recommended">پیشنهاد سریع</span><h2>WireGuard</h2><p>اپ WireGuard را نصب کن، سپس QR را اسکن یا فایل آماده را دانلود و Import کن.</p>
+      <ol><li>WireGuard را از App Store، Google Play یا wireguard.com نصب کن.</li><li>روی Add tunnel بزن.</li><li>Scan from QR code یا Import from file را انتخاب کن.</li><li>تونل را روشن کن.</li></ol>
+      <a class="primary-button" href="{{ url_for('public_wireguard_config', name=name, token=token) }}">دانلود فایل WireGuard</a>
+    </div>
+    <div class="connect-qr"><img src="{{ url_for('public_wireguard_qr', name=name, token=token) }}" alt="QR اتصال WireGuard برای {{ name }}" width="240" height="240"><small>برای امنیت، QR را ذخیره یا ارسال نکن.</small></div>
+  </section>
+  {% endif %}
+
+  {% if user.get('ikev2_enabled', True) or user.get('l2tp_enabled', True) %}<section class="connect-card" id="manual">
+    <div class="connect-card-copy"><h2>IKEv2 و L2TP/IPsec</h2><p>در تنظیمات VPN دستگاه یک اتصال جدید بساز و این اطلاعات را وارد کن.</p>
+      <div class="connect-values"><label>Server <input readonly value="{{ host }}"></label><label>Username <input readonly value="{{ name }}"></label><label>Password <input readonly value="{{ user.password }}"></label>{% if user.get('l2tp_enabled', True) %}<label>PSK <input readonly value="{{ psk }}"></label>{% endif %}</div>
+      <p class="connect-hint">برای IKEv2 نوع احراز هویت را Username/Password انتخاب کن. برای L2TP گزینه IPsec PSK را انتخاب کن.</p>
+    </div>
+  </section>{% endif %}
+
+  {% if user.vless_enabled or user.hy_enabled or user.ss_enabled or user.vmess_enabled or user.http_enabled or user.mtg_enabled %}<section class="connect-card compact"><div><h2>پروتکل‌های پیشرفته</h2><p>برای VLESS، Hysteria2، Shadowsocks و VMess از لینک Subscription در اپ‌هایی مثل Hiddify، v2rayNG یا Streisand استفاده کن.</p></div><a class="secondary-button" href="{{ url_for('subscription', name=name, token=token) }}">دریافت Subscription</a></section>{% endif %}
+  <footer>SirGSM VPN · NH</footer>
+</main>
+</body></html>

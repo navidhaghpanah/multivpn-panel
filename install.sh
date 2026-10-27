@@ -182,7 +182,7 @@ apt-get update -y
 apt-get install -y \
   strongswan strongswan-pki libcharon-extra-plugins libstrongswan-extra-plugins \
   libstrongswan-standard-plugins xl2tpd ppp iptables iptables-persistent \
-  certbot nginx python3-flask gunicorn curl openssl unzip
+  certbot nginx python3-flask gunicorn curl openssl unzip wireguard-tools qrencode
 
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
 for f in /etc/ipsec.conf /etc/ipsec.secrets /etc/xl2tpd/xl2tpd.conf /etc/ppp/options.xl2tpd \

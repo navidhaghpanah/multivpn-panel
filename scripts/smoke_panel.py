@@ -78,6 +78,8 @@ def _import_app(app_dir: Path, cfg: Path, data: Path, sysdir: Path):
     A.CHAP_SECRETS = sysdir / "chap-secrets"
     A.IPSEC_CONF = sysdir / "ipsec.conf"
     A.PPP_OPTS = sysdir / "options.xl2tpd"
+    A.WG_CONFIG = sysdir / "wg0.conf"
+    A.WG_CLIENTS_DIR = sysdir / "wg-clients"
     A.XRAY_SS_CONFIG = sysdir / "xray.json"
     A.HYSTERIA_CONFIG = sysdir / "hy.yaml"
     A.MTG_CONFIG = sysdir / "mtg.toml"
