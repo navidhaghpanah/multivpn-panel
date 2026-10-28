@@ -1646,8 +1646,11 @@ def write_wireguard_config(users=None):
     public_ip = (cfg.get("public_ip") or "").strip()
     legacy_redirect = ["iptables", "-t", "nat", "-D", "PREROUTING", "-p", "udp", "--dport",
                        str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
-    while subprocess.run(legacy_redirect, capture_output=True, timeout=5).returncode == 0:
-        pass
+    # Bound cleanup so a mocked/synthetic iptables command can never stall an
+    # update forever.  More than 16 duplicate legacy rules is not realistic.
+    for _ in range(16):
+        if subprocess.run(legacy_redirect, capture_output=True, timeout=5).returncode != 0:
+            break
     redirect = ["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "-d", public_ip,
                 "--dport", str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
     if subprocess.run(redirect, capture_output=True, timeout=5).returncode != 0:
