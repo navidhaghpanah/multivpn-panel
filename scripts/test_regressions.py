@@ -340,7 +340,8 @@ class ProcessTests(unittest.TestCase):
         base = (ROOT / "panel" / "templates" / "base.html").read_text(encoding="utf-8")
         self.assertIn("body.page-dash{overflow:auto}", css)
         self.assertIn("height:auto;max-height:none;overflow:visible", css)
-        self.assertIn("20261026-ui-audit-v3", base)
+        self.assertIn("20261028-dashboard-flow", base)
+        self.assertTrue(css.rstrip().endswith("@media(min-width:901px){body.page-dash .dashboard-grid>.panel{min-height:0}}"))
 
     def test_full_ui_audit_keeps_navigation_and_forms_usable(self):
         css = (ROOT / "panel" / "static" / "style.css").read_text(encoding="utf-8")
@@ -349,7 +350,7 @@ class ProcessTests(unittest.TestCase):
         self.assertIn(".side-nav{\n  flex:1 1 auto;", css)
         self.assertIn("overflow-y:auto", css)
         self.assertIn(".add-user-form{grid-template-columns:repeat(4,minmax(0,1fr))", css)
-        self.assertIn("20261026-ui-audit-v3", base)
+        self.assertIn("20261028-dashboard-flow", base)
         self.assertEqual(settings.count("settings_update_apply"), 1)
 
     def test_processes_do_not_lose_updates(self):

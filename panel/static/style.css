@@ -542,3 +542,13 @@ input[type=file]::file-selector-button{height:30px;margin-inline-end:10px;paddin
   .settings-heading{min-height:0}
 }
 
+/* Dashboard must grow with its cards. Later compact-mode rules used to clip
+   the second quick-action row on common laptop viewports. */
+body.page-dash{overflow:auto}
+body.page-dash .app-shell{height:auto;max-height:none;min-height:100vh;overflow:visible;display:block}
+body.page-dash .content{min-height:calc(100vh - 89px);overflow:visible;display:block;padding-bottom:56px}
+body.page-dash .dashboard-grid{min-height:0;overflow:visible;grid-template-rows:auto}
+body.page-dash .dashboard-grid>.panel{height:auto;min-height:0;overflow:visible;padding:20px}
+body.page-dash .online-list{overflow:visible}
+@media(min-width:901px){body.page-dash .dashboard-grid>.panel{min-height:0}}
+
