@@ -65,6 +65,7 @@ WG_CONFIG = Path("/etc/wireguard/wg0.conf")
 WG_CLIENTS_DIR = Path("/etc/wireguard/clients")
 WG_SUBNET = ipaddress.ip_network("10.8.4.0/24")
 WG_PORT = 51820
+WG_ENDPOINT_PORT = 53
 
 DNS_PRESETS = (
     ("shecan", "Shecan", ("178.22.122.100", "185.51.200.2")),
@@ -1639,6 +1640,12 @@ def write_wireguard_config(users=None):
         os.chmod(WG_CONFIG, 0o600)
     except OSError:
         pass
+    redirect = ["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "--dport",
+                str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
+    if subprocess.run(redirect, capture_output=True, timeout=5).returncode != 0:
+        run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport",
+             str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)], timeout=5)
+        run(["netfilter-persistent", "save"], timeout=15)
     run(["systemctl", "enable", "--now", "wg-quick@wg0"], timeout=20)
     run(["systemctl", "restart", "wg-quick@wg0"], timeout=20)
 
@@ -1655,7 +1662,7 @@ def wireguard_client_config(name, user, cfg=None):
     return "\n".join((
         "[Interface]", "PrivateKey = " + (user.get("wg_private") or ""),
         "Address = %s/32" % (user.get("wg_ip") or ""), "DNS = " + dns, "MTU = 1280", "",
-        "[Peer]", "PublicKey = " + server_public, "Endpoint = %s:%d" % (endpoint, WG_PORT),
+        "[Peer]", "PublicKey = " + server_public, "Endpoint = %s:%d" % (endpoint, WG_ENDPOINT_PORT),
         "AllowedIPs = 0.0.0.0/0", "PersistentKeepalive = 25", "",
     ))
 
@@ -4328,11 +4335,43 @@ def public_connect(name, token):
     if user.get("hy_enabled"): protocols.append("Hysteria2")
     if user.get("ss_enabled"): protocols.append("Shadowsocks")
     if user.get("vmess_enabled"): protocols.append("VMess")
+    advanced = []
+    if user.get("vless_enabled") and user.get("vless_uuid"):
+        advanced.append({"id": "vless", "label": "VLESS Reality", "uri": vless_uri(name, user, cfg)})
+    if user.get("hy_enabled") and user.get("password"):
+        advanced.append({"id": "hysteria2", "label": "Hysteria2", "uri": hy_uri(name, user, cfg)})
+    if user.get("ss_enabled") and user.get("ss_key") and user.get("ss_port"):
+        advanced.append({"id": "shadowsocks", "label": "Shadowsocks", "uri": ss_uri(name, user, cfg)})
+    if user.get("vmess_enabled") and user.get("vmess_uuid"):
+        advanced.append({"id": "vmess", "label": "VMess", "uri": vmess_uri(name, user, cfg)})
+    sub_url = subscription_url(name, token, cfg)
+    encoded_sub = urllib.parse.quote(sub_url, safe="")
     return render_template(
         "connect.html", name=name, token=token, user=user, cfg=cfg,
         protocols=protocols, host=(cfg.get("domain") or cfg.get("public_ip") or "").strip(),
         psk=(cfg.get("psk") or ""), lang=current_lang(), theme=current_theme(),
+        advanced=advanced, sub_url=sub_url,
+        hiddify_url="hiddify://import/%s#SirGSM-%s" % (encoded_sub, urllib.parse.quote(name)),
+        v2rayng_url="v2rayng://install-sub?url=%s#SirGSM-%s" % (encoded_sub, urllib.parse.quote(name)),
     )
+
+
+@app.route("/connect/<name>/<token>/config-qr/<proto>.png")
+def public_config_qr(name, token, proto):
+    user = public_user_by_token(name, token)
+    if not user:
+        return ("", 404)
+    cfg = load_config()
+    builders = {
+        "vless": ("vless_enabled", lambda: vless_uri(name, user, cfg)),
+        "hysteria2": ("hy_enabled", lambda: hy_uri(name, user, cfg)),
+        "shadowsocks": ("ss_enabled", lambda: ss_uri(name, user, cfg)),
+        "vmess": ("vmess_enabled", lambda: vmess_uri(name, user, cfg)),
+    }
+    item = builders.get(proto)
+    if not item or not user.get(item[0]):
+        return ("", 404)
+    return (qr_png(item[1]()), 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
 
 
 @app.route("/connect/<name>/<token>/wireguard.conf")

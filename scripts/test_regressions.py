@@ -230,6 +230,20 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("اتصال alice", response.get_data(as_text=True))
 
+    def test_public_connect_has_import_actions_and_protocol_qr(self):
+        users = self.A.load_users()
+        token = "landing-import-token"
+        users["alice"].update({"sub_token": token, "vless_enabled": True, "vless_uuid": "11111111-1111-4111-8111-111111111111"})
+        self.A.save_users(users)
+        c = self.A.app.test_client()
+        html = c.get("/connect/alice/" + token).get_data(as_text=True)
+        self.assertIn("افزودن به Hiddify", html)
+        self.assertIn("v2rayng://install-sub", html)
+        self.assertIn("کپی Subscription برای Streisand", html)
+        with patch.object(self.A, "qr_png", return_value=b"png"):
+            qr = c.get("/connect/alice/%s/config-qr/vless.png" % token)
+        self.assertEqual(qr.status_code, 200)
+
     def test_dashboard_backfills_landing_tokens_for_legacy_users(self):
         users = self.A.load_users()
         users["alice"].pop("sub_token", None)
@@ -253,7 +267,7 @@ class AccountTests(unittest.TestCase):
             payload = self.A.wireguard_client_config("alice", user)
         self.assertIn("Address = 10.8.4.2/32", payload)
         self.assertIn("AllowedIPs = 0.0.0.0/0", payload)
-        self.assertIn("Endpoint = vpn.example.com:51820", payload)
+        self.assertIn("Endpoint = vpn.example.com:53", payload)
 
     def test_mtg_rotation_and_unchanged_config(self):
         source = (ROOT / "panel/app.py").read_text(encoding="utf-8")
@@ -341,7 +355,7 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("body.page-dash{overflow:auto}", css)
         self.assertIn("height:auto;max-height:none;overflow:visible", css)
         self.assertIn("20261028-dashboard-flow", base)
-        self.assertTrue(css.rstrip().endswith("@media(min-width:901px){body.page-dash .dashboard-grid>.panel{min-height:0}}"))
+        self.assertGreater(css.rfind("body.page-dash{overflow:auto}"), css.rfind("body.page-dash{overflow:hidden}"))
 
     def test_full_ui_audit_keeps_navigation_and_forms_usable(self):
         css = (ROOT / "panel" / "static" / "style.css").read_text(encoding="utf-8")

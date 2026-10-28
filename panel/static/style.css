@@ -552,3 +552,9 @@ body.page-dash .dashboard-grid>.panel{height:auto;min-height:0;overflow:visible;
 body.page-dash .online-list{overflow:visible}
 @media(min-width:901px){body.page-dash .dashboard-grid>.panel{min-height:0}}
 
+/* Public landing import actions */
+.connect-advanced{display:block}.connect-app-actions{display:flex;flex-wrap:wrap;gap:9px;margin:18px 0}.connect-app-actions button{font-family:inherit}
+.connect-config-list{display:grid;gap:12px;margin-top:18px}.connect-config-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;padding:15px;border:1px solid rgba(212,175,55,.18);border-radius:12px;background:rgba(0,0,0,.18)}
+.connect-config-item h3{margin:0 0 8px;font-size:14px;color:var(--heading)}.connect-config-item input{font-size:11px;cursor:pointer}.connect-config-actions{display:flex;align-items:center;gap:8px}.connect-config-actions img{border-radius:9px;background:#fff;padding:5px}.connect-config-actions button{font-family:inherit}
+@media(max-width:700px){.connect-config-item{grid-template-columns:1fr}.connect-config-actions{display:grid;grid-template-columns:1fr 1fr}.connect-config-actions img{grid-column:1/-1;justify-self:center}.connect-app-actions{display:grid}.connect-app-actions>*{width:100%}}
+

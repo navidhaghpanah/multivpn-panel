@@ -5,7 +5,7 @@ function uiText(key, fallback) {
 }
 
 function copyValue(el) {
-  const value = 'value' in el && el.tagName === 'INPUT' ? el.value : el.textContent.trim();
+  const value = el.dataset.copyValue || ('value' in el && el.tagName === 'INPUT' ? el.value : el.textContent.trim());
   const done = () => flashCopied(el);
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(value).then(done).catch(() => fallbackCopy(el, value, done));
