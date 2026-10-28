@@ -5,9 +5,9 @@
   <title>اتصال {{ name }} — SirGSM VPN</title>
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700;800&display=swap">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261028-wireguard-landing') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261028-import-actions') }}">
 </head>
-<body class="connect-page">
+<body class="connect-page" data-copied="کپی شد">
 <main class="connect-shell">
   <header class="connect-hero">
     <img src="{{ url_for('static', filename='logo.png') }}" alt="SirGSM VPN" width="64" height="64">
@@ -15,7 +15,7 @@
   </header>
   <section class="connect-security-note" role="note">این صفحه شامل اطلاعات اتصال شماست؛ لینک را برای دیگران نفرست.</section>
   <nav class="connect-protocols" aria-label="پروتکل‌های فعال">
-    {% for protocol in protocols %}<a href="#{{ 'wireguard' if protocol == 'WireGuard' else 'manual' }}">{{ protocol }}</a>{% endfor %}
+    {% for protocol in protocols %}<a href="#{{ 'wireguard' if protocol == 'WireGuard' else ('manual' if protocol in ('IKEv2', 'L2TP/IPsec') else 'advanced') }}">{{ protocol }}</a>{% endfor %}
   </nav>
 
   {% if user.wireguard_enabled %}
@@ -35,7 +35,14 @@
     </div>
   </section>{% endif %}
 
-  {% if user.vless_enabled or user.hy_enabled or user.ss_enabled or user.vmess_enabled or user.http_enabled or user.mtg_enabled %}<section class="connect-card compact"><div><h2>پروتکل‌های پیشرفته</h2><p>برای VLESS، Hysteria2، Shadowsocks و VMess از لینک Subscription در اپ‌هایی مثل Hiddify، v2rayNG یا Streisand استفاده کن.</p></div><a class="secondary-button" href="{{ url_for('subscription', name=name, token=token) }}">دریافت Subscription</a></section>{% endif %}
+  {% if advanced %}<section class="connect-card connect-advanced" id="advanced">
+    <div class="connect-card-copy"><span class="recommended">Import سریع</span><h2>پروتکل‌های پیشرفته</h2><p>همه کانفیگ‌ها را یکجا به اپ اضافه کن، یا هر پروتکل را جداگانه باز، کپی یا اسکن کن.</p>
+      <div class="connect-app-actions"><a class="primary-button" href="{{ hiddify_url }}">افزودن به Hiddify</a><a class="secondary-button" href="{{ v2rayng_url }}">افزودن به v2rayNG</a><button class="secondary-button copyable" type="button" data-copy-value="{{ sub_url }}">کپی Subscription برای Streisand</button><a class="secondary-button" href="{{ sub_url }}">دریافت Subscription</a></div>
+      <p class="connect-hint">اگر اپ خودکار باز نشد، Subscription را کپی کن و داخل اپ از Add profile / Import from clipboard استفاده کن.</p>
+      <div class="connect-config-list">{% for item in advanced %}<article class="connect-config-item" id="{{ item.id }}"><div><h3>{{ item.label }}</h3><input class="copyable" dir="ltr" readonly value="{{ item.uri }}" aria-label="لینک {{ item.label }}"></div><div class="connect-config-actions"><a class="secondary-button" href="{{ item.uri }}">بازکردن در اپ</a><button class="secondary-button copyable" type="button" data-copy-value="{{ item.uri }}">کپی لینک</button><img src="{{ url_for('public_config_qr', name=name, token=token, proto=item.id) }}" alt="QR {{ item.label }}" width="96" height="96"></div></article>{% endfor %}</div>
+    </div>
+  </section>{% endif %}
   <footer>SirGSM VPN · NH</footer>
 </main>
+<script src="{{ url_for('static', filename='copy.js', v='20261028-import-actions') }}" defer></script>
 </body></html>
