@@ -357,6 +357,11 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("20261028-dashboard-flow", base)
         self.assertGreater(css.rfind("body.page-dash{overflow:auto}"), css.rfind("body.page-dash{overflow:hidden}"))
 
+    def test_wireguard_dns_port_redirect_only_targets_the_vps(self):
+        source = (ROOT / "panel" / "app.py").read_text(encoding="utf-8")
+        self.assertIn('"-d", public_ip,\n                "--dport", str(WG_ENDPOINT_PORT)', source)
+        self.assertIn("legacy_redirect", source)
+
     def test_full_ui_audit_keeps_navigation_and_forms_usable(self):
         css = (ROOT / "panel" / "static" / "style.css").read_text(encoding="utf-8")
         base = (ROOT / "panel" / "templates" / "base.html").read_text(encoding="utf-8")

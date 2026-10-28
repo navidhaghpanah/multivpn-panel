@@ -1640,11 +1640,19 @@ def write_wireguard_config(users=None):
         os.chmod(WG_CONFIG, 0o600)
     except OSError:
         pass
-    redirect = ["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "--dport",
-                str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
+    # Only packets addressed to this host are WireGuard handshakes.  A broad
+    # UDP/53 redirect also captures DNS forwarded by IKEv2/L2TP clients and
+    # makes an otherwise connected VPN appear to have no internet access.
+    public_ip = (cfg.get("public_ip") or "").strip()
+    legacy_redirect = ["iptables", "-t", "nat", "-D", "PREROUTING", "-p", "udp", "--dport",
+                       str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
+    while subprocess.run(legacy_redirect, capture_output=True, timeout=5).returncode == 0:
+        pass
+    redirect = ["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "-d", public_ip,
+                "--dport", str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)]
     if subprocess.run(redirect, capture_output=True, timeout=5).returncode != 0:
-        run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport",
-             str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)], timeout=5)
+        run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "-d", public_ip,
+             "--dport", str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)], timeout=5)
         run(["netfilter-persistent", "save"], timeout=15)
     run(["systemctl", "enable", "--now", "wg-quick@wg0"], timeout=20)
     run(["systemctl", "restart", "wg-quick@wg0"], timeout=20)
