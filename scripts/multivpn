@@ -61,14 +61,17 @@ cmd_install_cli() {
 
 ensure_repo() {
   local branch="$1"
-  if [[ ! -d "$REPO_DIR/.git" ]]; then
-    hint "clone $REPO_URL -> $REPO_DIR ($branch)"
-    git clone --branch "$branch" "$REPO_URL" "$REPO_DIR"
+  if [[ -d "$REPO_DIR/.git" ]]; then
+    if [[ -n "$(git -C "$REPO_DIR" status --porcelain)" ]]; then
+      die "Local changes exist in $REPO_DIR; preserved. Use the panel updater or back up and clean this checkout before CLI update."
+    fi
+    git -C "$REPO_DIR" fetch origin "$branch"
+    git -C "$REPO_DIR" checkout "$branch"
+    git -C "$REPO_DIR" reset --hard "origin/$branch"
+    return
   fi
-  cd "$REPO_DIR"
-  git fetch origin "$branch"
-  git checkout "$branch"
-  git reset --hard "origin/$branch"
+  hint "clone $REPO_URL -> $REPO_DIR ($branch)"
+  git clone --branch "$branch" "$REPO_URL" "$REPO_DIR"
 }
 
 cmd_update() {
