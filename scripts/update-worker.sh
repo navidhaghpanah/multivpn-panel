@@ -46,14 +46,13 @@ rollback() {
 trap rollback ERR
 cleanup() {
   case "${BASH_SOURCE[0]}" in "$DATA_DIR"/update-worker.*) rm -f "${BASH_SOURCE[0]}" ;; esac
+  if [[ -n "${source_dir:-}" && -d "$source_dir" ]]; then rm -rf -- "$source_dir"; fi
 }
 trap cleanup EXIT
 status running "Downloading and validating update"
 # Never reset the persistent checkout: operators may keep local work there.
 # Build each update from a fresh disposable checkout and leave REPO_DIR untouched.
 source_dir="$(mktemp -d "$DATA_DIR/update-source.XXXXXX")"
-cleanup_source() { rm -rf -- "$source_dir"; }
-trap cleanup_source EXIT
 git clone --depth 1 --branch "$BRANCH" https://github.com/navidhaghpanah/multivpn-panel.git "$source_dir/repo"
 REPO_DIR="$source_dir/repo"
 python3 -m py_compile "$REPO_DIR/panel/app.py" "$REPO_DIR/panel/state_lock.py" "$REPO_DIR/panel/telegram_bot.py"
