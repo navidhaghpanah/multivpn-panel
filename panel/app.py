@@ -5184,16 +5184,22 @@ def _public_flash_detail(text, limit=180):
 
 def apply_update():
     deploy_script = REPO_DIR / "scripts" / "deploy.sh"
-    if not deploy_script.is_file():
-        return False, "Update source not found."
+    worker_script = REPO_DIR / "scripts" / "update-worker.sh"
+    if not deploy_script.is_file() or not worker_script.is_file():
+        return False, "Update scripts are missing from the server source checkout."
     try:
-        process = subprocess.run(["bash", str(deploy_script), REPO_BRANCH],
-                                 capture_output=True, text=True, timeout=10)
+        job = load_json(DATA_DIR / "update-status.json", {})
+        if isinstance(job, dict) and job.get("state") == "running":
+            return False, "An update is already running."
+        process = subprocess.run(
+            ["bash", str(deploy_script), REPO_BRANCH],
+            capture_output=True, text=True, timeout=15,
+        )
         output = (process.stdout or "") + (process.stderr or "")
-        return process.returncode == 0 and "panel update queued" in output, output
+        queued = process.returncode == 0 and "panel update queued" in output
+        return queued, output
     except (OSError, subprocess.SubprocessError) as error:
         return False, str(error)
-
 
 
 def read_unit_log(unit, lines=200):
