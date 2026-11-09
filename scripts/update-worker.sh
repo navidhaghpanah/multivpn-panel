@@ -36,7 +36,7 @@ rollback() {
     fi
     systemctl daemon-reload || true
     systemctl restart ikev2-l2tp-gui || true
-    if systemctl is-enabled panel-telegram-bot >/dev/null 2>&1; then
+    if [[ "${bot_was_active:-0}" == "1" ]]; then
       systemctl restart panel-telegram-bot || true
     fi
   fi
