@@ -5153,21 +5153,21 @@ def settings_telegram():
 
 
 def update_status():
+    # Status comes from the detached updater; checking it must not mutate Git state.
+    job = load_json(DATA_DIR / "update-status.json", {})
+    if not isinstance(job, dict):
+        job = {}
+    result = {"job": job, "current": "", "latest": "", "behind": None}
     if not (REPO_DIR / ".git").is_dir():
-        return None
-    run(["git", "-C", str(REPO_DIR), "fetch", "origin", REPO_BRANCH], timeout=20)
-    cur = run(["git", "-C", str(REPO_DIR), "log", "-1", "--format=%h %ad", "--date=short", "HEAD"], timeout=10).strip()
-    latest = run(
-        ["git", "-C", str(REPO_DIR), "log", "-1", "--format=%h %ad", "--date=short", "origin/%s" % REPO_BRANCH], timeout=10
-    ).strip()
-    behind_raw = run(
-        ["git", "-C", str(REPO_DIR), "rev-list", "--count", "HEAD..origin/%s" % REPO_BRANCH], timeout=10
-    ).strip()
+        return result
     try:
-        behind = int(behind_raw)
-    except ValueError:
-        behind = None
-    return {"current": cur, "latest": latest, "behind": behind}
+        cur = run(["git", "-C", str(REPO_DIR), "log", "-1", "--format=%h %ad", "--date=short", "HEAD"], timeout=8).strip()
+        latest = run(["git", "-C", str(REPO_DIR), "ls-remote", "--heads", "https://github.com/navidhaghpanah/multivpn-panel.git", REPO_BRANCH], timeout=12).strip()
+        latest_sha = latest.split()[0][:7] if latest else ""
+        result.update({"current": cur, "latest": latest_sha, "behind": None})
+    except Exception:
+        pass
+    return result
 
 
 def _public_flash_detail(text, limit=180):
