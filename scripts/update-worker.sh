@@ -68,7 +68,9 @@ for unit in ikev2-l2tp-gui panel-telegram-bot; do
 done
 [[ ! -f "$DATA_DIR/deployment-version" ]] || cp -a "$DATA_DIR/deployment-version" "$snapshot/version"
 status running "Provisioning services and updating application"
-systemctl stop panel-telegram-bot || true
+bot_was_active=0
+if systemctl is-active --quiet panel-telegram-bot; then bot_was_active=1; fi
+if (( bot_was_active )); then systemctl stop panel-telegram-bot; fi
 EXTRA_ONLY=1 bash "$REPO_DIR/install.sh"
 cp -a "$REPO_DIR/panel/." "$APP_DIR/"
 install -m 0644 "$REPO_DIR/panel/ikev2-l2tp-gui.service" /etc/systemd/system/ikev2-l2tp-gui.service
@@ -90,7 +92,7 @@ for attempt in {1..30}; do
   sleep 1
 done
 [[ "$healthy" == 1 ]]
-if systemctl is-enabled panel-telegram-bot >/dev/null 2>&1; then
+if (( bot_was_active )); then
   systemctl restart panel-telegram-bot
 fi
 status complete "Panel updated and verified"
