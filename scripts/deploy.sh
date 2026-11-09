@@ -6,6 +6,7 @@ set -euo pipefail
 APP_DIR="${IKEGUI_APP:-/opt/ikev2-l2tp-gui}"
 REPO_DIR="${IKEGUI_REPO:-${REPO_DIR:-/opt/ikev2-gui-src}}"
 BRANCH="${1:-main}"
+[[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != -* ]] || { echo "invalid branch" >&2; exit 2; }
 
 if [[ $EUID -ne 0 ]]; then
   echo "run as root" >&2
