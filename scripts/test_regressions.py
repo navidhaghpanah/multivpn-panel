@@ -269,7 +269,7 @@ class AccountTests(unittest.TestCase):
         self.assertIn("AllowedIPs = 0.0.0.0/0", payload)
         self.assertIn("Endpoint = vpn.example.com:53", payload)
 
-    def test_mtg_rotation_and_unchanged_config(self):
+    def test_mtg_personal_secret_survives_other_removal(self):
         source = (ROOT / "panel/app.py").read_text(encoding="utf-8")
         import ast
         node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "write_mtg_config")
@@ -277,14 +277,89 @@ class AccountTests(unittest.TestCase):
         users = self.A.load_users()
         for user in users.values():
             user["mtg_enabled"] = True
+        cfg = self.A.load_config()
+        cfg["mtg_secret"] = "ee" + ("ab" * 16) + "cloudflare.com".encode().hex()
+        cfg["mtg_legacy"] = True
+        self.A.save_config(cfg)
+        legacy = cfg["mtg_secret"]
         self.A.write_mtg_config(users)
-        first = self.A.load_config()["mtg_secret"]
+        users = self.A.load_users()
+        bob_secret = users["bob"]["mtg_secret"]
+        alice_secret = users["alice"]["mtg_secret"]
+        self.assertNotEqual(bob_secret, alice_secret)
+        self.assertNotEqual(bob_secret, legacy)
         count = len(self.commands)
         self.A.write_mtg_config(users)
         self.assertEqual(count, len(self.commands))
+        self.assertEqual(legacy, self.A.load_config()["mtg_secret"])
         users.pop("alice")
         self.A.write_mtg_config(users)
-        self.assertNotEqual(first, self.A.load_config()["mtg_secret"])
+        self.assertEqual(legacy, self.A.load_config()["mtg_secret"])
+        self.assertEqual(bob_secret, self.A.load_users()["bob"]["mtg_secret"])
+        text = (self.A.MTG_CONFIG.parent / "instances.json").read_text(encoding="utf-8")
+        self.assertNotIn('"id": "alice"', text)
+        self.assertIn('"id": "bob"', text)
+        self.assertIn('"id": "legacy"', text)
+
+    def test_corrupt_users_json_falls_back_to_sqlite(self):
+        users = self.A.load_users()
+        users["alice"]["note"] = "kept"
+        self.A.save_users(users)
+        self.A.USERS_FILE.write_text("{", encoding="utf-8")
+        loaded = self.A.load_users()
+        self.assertEqual(loaded["alice"]["password"], "alicepass")
+        self.assertEqual(loaded["alice"]["note"], "kept")
+        self.assertIn("bob", loaded)
+
+    def test_restored_json_wins_over_sqlite(self):
+        self.A.save_users(self.A.load_users())
+        restored = json.loads(self.A.USERS_FILE.read_text(encoding="utf-8"))
+        restored["alice"]["password"] = "restored1"
+        self.A.USERS_FILE.write_text(json.dumps(restored), encoding="utf-8")
+        self.A.user_store.prefer_json(self.A.USERS_FILE)
+        self.assertEqual(self.A.load_users()["alice"]["password"], "restored1")
+
+    def test_device_cap_targets_only_extra_dedicated_ip(self):
+        users = {"alice": {"ss_port": 8388, "http_port": 10810, "mtg_port": 32000}}
+        connections = [(8388, "203.0.113.5"), (8388, "203.0.113.6"), (8443, "198.51.100.9")]
+        first = {}
+        early = self.A.device_cap.plan_drops(users, {}, first, 1, connections, 1000, grace=60)
+        self.assertEqual(early, set())
+        later = {}
+        drops = self.A.device_cap.plan_drops(users, first, later, 1, connections, 1000 + 120, grace=60)
+        self.assertEqual(drops, {
+            ("203.0.113.5", 8388),
+            ("203.0.113.5", 10810),
+            ("203.0.113.5", 32000),
+        })
+        self.assertTrue(all(port != 8443 for _ip, port in drops))
+
+    def test_operator_login_skips_owner_totp_and_cannot_change_owner_password(self):
+        admin = self.A.load_admin()
+        admin["totp_enabled"] = True
+        admin["totp_secret"] = self.A.totp_new_secret()
+        admin["operators"] = [{
+            "user": "ops",
+            "password": self.A.generate_password_hash("operator-pass-1"),
+            "role": "operator",
+        }]
+        self.A.save_admin(admin)
+        before = self.A.load_admin()["password"]
+        c = smoke._client(self.A)
+        page = c.get("/login")
+        csrf = smoke._csrf(page.get_data(as_text=True))
+        blocked = c.post("/login", data={"user": "admin", "password": "adminpass", "csrf_token": csrf})
+        self.assertEqual(blocked.status_code, 200)
+        csrf = smoke._csrf(c.get("/login").get_data(as_text=True))
+        ok = c.post("/login", data={"user": "ops", "password": "operator-pass-1", "csrf_token": csrf})
+        self.assertEqual(ok.status_code, 302)
+        settings = c.get("/settings")
+        self.assertEqual(settings.status_code, 200)
+        self.assertNotIn("settings_operator_add", settings.get_data(as_text=True))
+        csrf = smoke._csrf(settings.get_data(as_text=True))
+        denied = c.post("/settings/admin", data={"password": "a-new-password-xx", "csrf_token": csrf})
+        self.assertEqual(denied.status_code, 302)
+        self.assertEqual(self.A.load_admin()["password"], before)
 
     def test_metered_accounts_cannot_use_shared_mtg(self):
         self.assertFalse(self.A.mtg_allowed({"mtg_enabled": True, "quota_gb": 5}))

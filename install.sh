@@ -608,11 +608,14 @@ if [[ -n "$MTG_ASSET" ]]; then
 [Unit]
 Description=Panel MTProto (mtg)
 After=network.target
-ConditionPathExists=/etc/panel-mtg/mtg.toml
+ConditionPathExists=/etc/panel-mtg/instances.json
 
 [Service]
 Type=simple
-ExecStart=/opt/panel-mtg/mtg run /etc/panel-mtg/mtg.toml
+Environment=MTG_INSTANCES=/etc/panel-mtg/instances.json
+Environment=MTG_TOML=/etc/panel-mtg/mtg.toml
+Environment=MTG_BIN=/opt/panel-mtg/mtg
+ExecStart=/usr/bin/python3 /opt/ikev2-l2tp-gui/mtg_supervisor.py
 Restart=on-failure
 RestartSec=5
 User=root
@@ -641,7 +644,8 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
   ufw allow 8388:8888/udp >/dev/null 2>&1 || true
   ufw allow 2053/tcp  >/dev/null 2>&1 || true   # VMess WS+TLS
   ufw allow 10809/tcp >/dev/null 2>&1 || true   # HTTP proxy
-  ufw allow 3128/tcp  >/dev/null 2>&1 || true   # MTProto (mtg)
+  ufw allow 3128/tcp  >/dev/null 2>&1 || true   # legacy shared MTProto
+  ufw allow 32000:32100/tcp >/dev/null 2>&1 || true   # personal MTProto
 fi
 
 if [[ "${EXTRA_ONLY:-}" == "1" ]]; then

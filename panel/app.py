@@ -42,6 +42,8 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from state_lock import StateLock
+import device_cap
+import user_store
 
 APP_DIR = Path(os.environ.get("IKEGUI_APP", "/opt/ikev2-l2tp-gui"))
 CFG_DIR = Path(os.environ.get("IKEGUI_CFG", "/etc/ikev2-l2tp-gui"))
@@ -299,7 +301,7 @@ I18N = {
         "card_sessions": "نشست‌های هم‌زمان",
         "card_sessions_p": "کنترل تعداد اتصال مجاز برای هر حساب",
         "max_sess": "حداکثر نشست برای هر کاربر",
-        "max_sess_h": "بین ۱ تا ۱۰؛ هنگام پاک‌سازی دستی برای مجموع نشست‌های IKEv2 و L2TP اعمال می‌شود. پروکسی‌ها محدودیت تعداد دستگاه ندارند.",
+        "max_sess_h": "بین ۱ تا ۱۰. برای IKEv2/L2TP همان سقف نشست است. برای Shadowsocks، پروکسی HTTPS و MTProto شخصی، IPهای جدا روی پورت اختصاصی همان کاربر شمرده می‌شود. پورت مشترک VLESS/VMess/Hysteria قطع نمی‌شود.",
         "save_cleanup": "ذخیره و پاک‌سازی",
         "card_dns": "DNS تونل",
         "card_dns_p": "DNS کلاینت‌های VPN. از دکمه‌ها انتخاب کنید یا IP دلخواه بگذارید.",
@@ -318,6 +320,22 @@ I18N = {
         "admin_pass_ph": "حداقل ۱۲ نویسه",
         "admin_pass_h": "از یک رمز اختصاصی و طولانی استفاده کنید.",
         "change_admin": "تغییر رمز پنل",
+        "card_ops": "اپراتورها",
+        "card_ops_p": "ورود جدا، بدون کد مدیر. رمز و بازیابی و اپراتورها فقط برای مالک است.",
+        "op_user": "نام اپراتور",
+        "op_pass": "رمز اپراتور",
+        "op_add": "افزودن اپراتور",
+        "op_remove": "حذف",
+        "op_none": "هنوز اپراتوری نیست.",
+        "op_ok": "اپراتورها ذخیره شد. نشست‌های دیگر پنل بسته شد.",
+        "op_bad": "نام یا رمز اپراتور قابل قبول نیست.",
+        "op_exists": "این نام قبلاً استفاده شده.",
+        "owner_only": "این کار فقط با حساب مالک پنل ممکن است.",
+        "card_mtg_legacy": "MTProto قدیمی",
+        "mtg_legacy": "لینک مشترک قبلی (پورت ۳۱۲۸) روشن بماند",
+        "mtg_legacy_h": "لینک شخصی هر کاربر جدا است و با حذف بقیه عوض نمی‌شود. این گزینه فقط لینک مشترک قبلی را زنده نگه می‌دارد.",
+        "mtg_legacy_ok": "وضعیت لینک مشترک MTProto ذخیره شد.",
+        "save_mtg": "ذخیره MTProto",
         "card_psk": "کلید مشترک L2TP",
         "card_psk_p": "فقط برای اتصال‌های قدیمی L2TP",
         "new_psk": "PSK جدید",
@@ -688,7 +706,7 @@ I18N = {
         "card_sessions": "Concurrent sessions",
         "card_sessions_p": "How many connections each account may keep",
         "max_sess": "Max sessions per user",
-        "max_sess_h": "1 to 10; applied to combined IKEv2/L2TP sessions during manual cleanup. Proxy protocols do not enforce device limits.",
+        "max_sess_h": "1 to 10. IKEv2/L2TP uses this as a session cap. Shadowsocks, HTTPS proxy and personal MTProto count distinct IPs on that user's own port. Shared VLESS/VMess/Hysteria ports are not blocked.",
         "save_cleanup": "Save and clean",
         "card_dns": "Tunnel DNS",
         "card_dns_p": "DNS pushed to VPN clients. Pick a preset or type IPs.",
@@ -707,6 +725,22 @@ I18N = {
         "admin_pass_ph": "At least 12 characters",
         "admin_pass_h": "Use a long, unique password.",
         "change_admin": "Change panel password",
+        "card_ops": "Operators",
+        "card_ops_p": "Separate logins, without the owner's authenticator. Password, restore and operators stay owner-only.",
+        "op_user": "Operator name",
+        "op_pass": "Operator password",
+        "op_add": "Add operator",
+        "op_remove": "Remove",
+        "op_none": "No operators yet.",
+        "op_ok": "Operators saved. Other panel sessions were signed out.",
+        "op_bad": "Operator name or password is not acceptable.",
+        "op_exists": "That name is already used.",
+        "owner_only": "Only the panel owner can do this.",
+        "card_mtg_legacy": "Legacy MTProto",
+        "mtg_legacy": "Keep the old shared link (port 3128)",
+        "mtg_legacy_h": "Each user has a personal link that is not rotated when someone else is removed. This switch only keeps the previous shared link alive.",
+        "mtg_legacy_ok": "Legacy MTProto link updated.",
+        "save_mtg": "Save MTProto",
         "card_psk": "L2TP shared key",
         "card_psk_p": "Only for legacy L2TP",
         "new_psk": "New PSK",
@@ -1212,14 +1246,52 @@ def load_config():
     return cfg
 
 
+def _port_or_zero(value):
+    try:
+        port = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return port if 1 <= port <= 65535 else 0
+
+
+def reserved_ports(users, cfg):
+    reserved = set()
+    for user in (users or {}).values():
+        if not isinstance(user, dict):
+            continue
+        for key in ("ss_port", "http_port", "mtg_port"):
+            port = _port_or_zero(user.get(key))
+            if port:
+                reserved.add(port)
+    for key, default in (
+        ("vless_port", 8443),
+        ("vmess_port", 2053),
+        ("mtg_port", 3128),
+        ("http_port", 10809),
+        ("hy_port", 443),
+    ):
+        port = _port_or_zero((cfg or {}).get(key) or default)
+        if port:
+            reserved.add(port)
+    return reserved
+
+
+def allocate_free_port(reserved, start):
+    port = int(start)
+    while port in reserved:
+        port += 1
+    if port > 65535:
+        raise ValueError("No free port")
+    reserved.add(port)
+    return port
+
+
 def allocate_ss_port():
     # Caller must already hold _lock (called from users_add/users_update).
     cfg = load_config()
     port = int(cfg.get("ss_next_port") or 8388)
     users = load_users()
-    reserved = {int(u.get(k) or 0) for u in users.values() for k in ("ss_port", "http_port")}
-    reserved.update(int(cfg.get(k) or default) for k, default in
-                    (("vless_port", 8443), ("vmess_port", 2053), ("mtg_port", 3128), ("http_port", 10809)))
+    reserved = reserved_ports(users, cfg)
     while port in reserved:
         port += 1
     if port > 65535:
@@ -1288,22 +1360,65 @@ def totp_otpauth(secret, user, host):
     return "otpauth://totp/%s?secret=%s&issuer=%s&period=30&digits=6" % (label, secret, issuer)
 
 
-def load_users():
-    data = load_json(USERS_FILE, {})
+def _normalize_users(data):
     if not isinstance(data, dict):
         return {}
     out = {}
-    for name, u in data.items():
-        if isinstance(name, str) and USER_RE.match(name) and isinstance(u, dict):
-            out[name] = u
-        elif isinstance(name, str) and isinstance(u, dict):
-            # keep oddly-named records so we do not silently drop them
-            out[name] = u
+    for name, user in data.items():
+        if isinstance(name, str) and isinstance(user, dict):
+            out[name] = user
     return out
+
+
+def _users_json_valid():
+    try:
+        if not USERS_FILE.is_file():
+            return False, None
+        parsed = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return False, None
+    if not isinstance(parsed, dict):
+        return False, None
+    return True, parsed
+
+
+def load_users():
+    json_ok, json_data = _users_json_valid()
+    sqlite_data = None
+    try:
+        sqlite_data = user_store.load_sqlite(USERS_FILE)
+    except Exception:
+        sqlite_data = None
+    use_json = False
+    if json_ok:
+        try:
+            json_mtime = USERS_FILE.stat().st_mtime
+            path = user_store.sqlite_path(USERS_FILE)
+            sqlite_mtime = path.stat().st_mtime if path.is_file() else -1
+        except OSError:
+            json_mtime, sqlite_mtime = 1, -1
+        if sqlite_mtime < 0 or json_mtime >= sqlite_mtime:
+            use_json = True
+    if use_json:
+        data = json_data
+    elif sqlite_data is not None:
+        data = sqlite_data
+    elif json_ok:
+        data = json_data
+    else:
+        data = {}
+    return _normalize_users(data)
 
 
 def save_users(users):
     save_json(USERS_FILE, users)
+    try:
+        user_store.save_sqlite(USERS_FILE, users)
+    except Exception:
+        try:
+            user_store.prefer_json(USERS_FILE)
+        except Exception:
+            pass
 
 
 def deleted_user_names():
@@ -1363,6 +1478,14 @@ def login_required(fn):
         return fn(*args, **kwargs)
 
     return wrap
+
+
+def require_owner():
+    """Missing role is the owner, so sessions from before operators stay valid."""
+    if session.get("role", "owner") == "owner":
+        return None
+    flash_t("owner_only")
+    return redirect(url_for("settings"))
 
 
 def csrf_token():
@@ -1685,8 +1808,8 @@ def wireguard_client_config(name, user, cfg=None):
 
 
 def mtg_allowed(u):
-    # Shared mtg cannot attribute usage. Do not let metered accounts bypass
-    # their quota through an unmetered shared secret.
+    # Personal mtg still has no byte counter. Do not let a metered account
+    # bypass its quota through an unmetered MTProto listener.
     try:
         return bool(u.get("mtg_enabled") and not user_blocked(u) and float(u.get("quota_gb") or 0) == 0)
     except (TypeError, ValueError):
@@ -1945,10 +2068,7 @@ def write_xray_ss_config(users=None):
     # HTTPS proxy: encrypt credentials on the client-to-proxy connection.
     http_ports = []
     users_changed = False
-    reserved = {int(u.get("ss_port") or 0) for u in users.values()}
-    reserved.update(int(u.get("http_port") or 0) for u in users.values())
-    reserved.update(int(cfg.get(k) or default) for k, default in
-                    (("vless_port", 8443), ("vmess_port", 2053), ("mtg_port", 3128)))
+    reserved = reserved_ports(users, cfg)
     next_http_port = int(cfg.get("http_port") or 10809)
     for name, u in users.items():
         if user_blocked(u) or not u.get("http_enabled"):
@@ -2090,67 +2210,121 @@ def write_hysteria_config(users=None):
         run_checked(["systemctl", "stop", "panel-hysteria"], timeout=15)
 
 
+MTG_SECRET_RE = re.compile(r"ee[0-9a-fA-F]{32,}")
+MTG_USER_PORT_BASE = 32000
+
+
+def mtg_instances_path():
+    return MTG_CONFIG.parent / "instances.json"
+
+
+def _mtg_toml(secret, port):
+    return 'secret = "%s"\nbind-to = "0.0.0.0:%d"\n' % (secret, int(port))
+
+
+def publish_mtg_files(instances):
+    """Write toml first, then a strictly newer instances.json.
+
+    The supervisor prefers instances.json unless toml is newer, which lets a
+    rolled-back panel keep publishing the single shared secret.
+    """
+    parent = MTG_CONFIG.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    legacy = next((item for item in instances if item.get("id") == "legacy"), None)
+    if legacy:
+        toml_text = _mtg_toml(legacy["secret"], legacy["port"])
+    elif instances:
+        toml_text = _mtg_toml(instances[0]["secret"], instances[0]["port"])
+    else:
+        toml_text = _mtg_toml("ee" + ("00" * 16), 1).replace("0.0.0.0:1", "127.0.0.1:1")
+    tmp = MTG_CONFIG.with_suffix(".tmp")
+    tmp.write_text(toml_text, encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(MTG_CONFIG)
+    inst = mtg_instances_path()
+    tmp_inst = inst.with_suffix(".tmp")
+    tmp_inst.write_text(json.dumps(instances, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp_inst, 0o600)
+    tmp_inst.replace(inst)
+    stamp = MTG_CONFIG.stat().st_mtime + 1
+    os.utime(inst, (stamp, stamp))
+
+
 @state_transaction
 def write_mtg_config(users=None):
-    # Xray has no mtproto inbound. Like 3x-ui v3.3 we run sidecar mtg
-    # (9seconds/mtg) with a single FakeTLS secret at panel/settings level.
-    # Per-user mtg_enabled only controls whether that user sees the same
-    # tg:// link — minting a unique secret per account is too heavy for mtg.
+    # One mtg process per secret. Personal listeners replace the old shared
+    # secret so removing one user does not rotate everyone else. An existing
+    # shared secret is kept as "legacy" until Settings turns it off.
     users = load_users() if users is None else users
     cfg = load_config()
-    any_user = any(
-        mtg_allowed(u) for u in users.values()
-    )
-    if not any_user:
-        if MTG_BIN.exists():
-            run_checked(["systemctl", "stop", "panel-mtg"], timeout=15)
-        if cfg.get("mtg_membership"):
-            cfg["mtg_membership"] = ""
-            cfg["mtg_secret"] = ""
-            save_config(cfg)
-        return
     changed = False
-    members = sorted(name for name, u in users.items()
-                     if mtg_allowed(u))
-    membership = hashlib.sha256(json.dumps(members).encode()).hexdigest()
-    # The shared backend cannot revoke one holder. Rotate on membership
-    # changes (including the first upgrade) to invalidate removed holders.
-    if cfg.get("mtg_membership") != membership:
-        cfg["mtg_secret"] = new_mtg_secret(cfg.get("mtg_domain") or "cloudflare.com")
-        cfg["mtg_membership"] = membership
+    if "mtg_legacy" not in cfg:
+        cfg["mtg_legacy"] = bool(MTG_SECRET_RE.fullmatch((cfg.get("mtg_secret") or "").strip() or ""))
         changed = True
     if not cfg.get("mtg_domain"):
         cfg["mtg_domain"] = "cloudflare.com"
         changed = True
     try:
-        port = int(cfg.get("mtg_port") or 3128)
+        legacy_port = int(cfg.get("mtg_port") or 3128)
     except (TypeError, ValueError):
-        port = 3128
-        cfg["mtg_port"] = port
+        legacy_port = 3128
+    if not 1 <= legacy_port <= 65535:
+        legacy_port = 3128
+    if cfg.get("mtg_port") != legacy_port:
+        cfg["mtg_port"] = legacy_port
         changed = True
-    secret = (cfg.get("mtg_secret") or "").strip()
-    if not re.fullmatch(r"ee[0-9a-fA-F]{32,}", secret):
-        secret = new_mtg_secret(cfg.get("mtg_domain") or "cloudflare.com")
-        cfg["mtg_secret"] = secret
-        changed = True
+    domain = cfg.get("mtg_domain") or "cloudflare.com"
+    reserved = reserved_ports(users, cfg)
+    users_changed = False
+    for name, user in users.items():
+        if not mtg_allowed(user):
+            continue
+        secret = (user.get("mtg_secret") or "").strip()
+        if not MTG_SECRET_RE.fullmatch(secret):
+            user["mtg_secret"] = new_mtg_secret(domain)
+            users_changed = True
+        port = _port_or_zero(user.get("mtg_port"))
+        if not port or port == legacy_port:
+            port = allocate_free_port(reserved, MTG_USER_PORT_BASE)
+            user["mtg_port"] = port
+            users_changed = True
+        else:
+            reserved.add(port)
+    if users_changed:
+        save_users(users)
     if changed:
         save_config(cfg)
-    # Secret is hex-only so it is safe inside TOML double quotes.
-    new_text = 'secret = "%s"\nbind-to = "0.0.0.0:%d"\n' % (secret, port)
+    allowed = sorted(name for name, user in users.items() if mtg_allowed(user))
+    instances = []
+    legacy_secret = (cfg.get("mtg_secret") or "").strip()
+    if cfg.get("mtg_legacy") and allowed and MTG_SECRET_RE.fullmatch(legacy_secret):
+        instances.append({"id": "legacy", "secret": legacy_secret, "port": legacy_port})
+    for name in allowed:
+        user = users[name]
+        instances.append({
+            "id": name,
+            "secret": user.get("mtg_secret") or "",
+            "port": int(user.get("mtg_port") or 0),
+        })
+    payload = json.dumps(instances, ensure_ascii=False, indent=2) + "\n"
     try:
-        unchanged = MTG_CONFIG.read_text(encoding="utf-8") == new_text
+        same = mtg_instances_path().read_text(encoding="utf-8") == payload
     except OSError:
-        unchanged = False
-    if unchanged:
-        if _systemctl_active("panel-mtg") is False:
+        same = False
+    if same:
+        if instances and MTG_BIN.exists() and _systemctl_active("panel-mtg") is False:
             run_checked(["systemctl", "start", "panel-mtg"], timeout=15)
         return
-    if not unchanged:
-        MTG_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        tmp = MTG_CONFIG.with_suffix(".tmp")
-        tmp.write_text(new_text, encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(MTG_CONFIG)
+    if not instances and not MTG_BIN.exists():
+        return
+    publish_mtg_files(instances)
+    if not MTG_BIN.exists():
+        return
+    if instances and "Status: active" in run(["ufw", "status"]):
+        for item in instances:
+            port = int(item.get("port") or 0)
+            if port >= MTG_USER_PORT_BASE:
+                run(["ufw", "allow", "%d/tcp" % port])
     run_checked(["systemctl", "restart", "panel-mtg"], timeout=15)
 
 
@@ -2591,8 +2765,8 @@ def sample_traffic():
     # Windows can briefly keep overlapping IKE SAs while reconnecting or
     # changing networks. Persistent duplicates are handled below only after a
     # grace period, so roaming does not disable the configured device cap.
-    # TCP socket count is not a device count. Do not kill ordinary parallel
-    # Shadowsocks connections. Proxy device caps are not currently supported.
+    # Dedicated-port proxies (Shadowsocks, HTTPS, personal MTProto) are capped
+    # by unique remote IP. Shared VLESS/VMess/Hysteria ports are not blocked.
     with _lock:
         users = load_users()
         snap = load_json(SNAP_FILE, {})
@@ -2642,6 +2816,7 @@ def sample_traffic():
                     changed = True
                 new_snap[key] = total
         enforce_session_limits(sessions, new_snap)
+        device_cap.enforce(users, snap, new_snap, max_sessions_per_user(), run)
         save_users(users)
         save_json(SNAP_FILE, new_snap)
         # Also reconcile deleted/disabled accounts on upgrade and every poll.
@@ -2922,8 +3097,20 @@ def login():
         user = (request.form.get("user") or "").strip()
         pw = request.form.get("password") or ""
         totp_on = bool(admin.get("totp_enabled") and admin.get("totp_secret"))
-        if user == admin.get("user") and admin.get("password") and check_password_hash(admin["password"], pw):
-            if totp_on and not totp_ok(admin.get("totp_secret") or "", request.form.get("totp") or ""):
+        owner_ok = bool(
+            user == (admin.get("user") or "") and admin.get("password")
+            and check_password_hash(admin["password"], pw)
+        )
+        operator = None
+        if not owner_ok:
+            for candidate in admin.get("operators") or []:
+                if not isinstance(candidate, dict):
+                    continue
+                if candidate.get("user") == user and candidate.get("password") and check_password_hash(candidate["password"], pw):
+                    operator = candidate
+                    break
+        if owner_ok or operator:
+            if owner_ok and totp_on and not totp_ok(admin.get("totp_secret") or "", request.form.get("totp") or ""):
                 attempts.append(now)
                 _login_attempts[remote] = attempts
                 err = tr("totp_bad")
@@ -2931,6 +3118,9 @@ def login():
                 session.clear()
                 session["ok"] = True
                 session["auth_version"] = admin.get("auth_version", 0)
+                session["role"] = "owner" if owner_ok else "operator"
+                if operator:
+                    session["operator"] = operator.get("user") or user
                 session.permanent = True
                 _login_attempts.pop(remote, None)
                 resp = redirect(url_for("index"))
@@ -3070,6 +3260,15 @@ def settings():
     pending = session.get("totp_pending") or ""
     d["totp_secret"] = pending
     d["totp_otpauth"] = totp_otpauth(pending, admin.get("user") or "admin", d.get("host") or "") if pending and not d["totp_on"] else ""
+    d["is_owner"] = session.get("role", "owner") == "owner"
+    d["operators"] = [
+        op.get("user") for op in (admin.get("operators") or [])
+        if isinstance(op, dict) and isinstance(op.get("user"), str)
+    ]
+    legacy = cfg.get("mtg_legacy")
+    if legacy is None:
+        legacy = bool((cfg.get("mtg_secret") or "").strip())
+    d["mtg_legacy"] = bool(legacy)
     dns_parts = list(cfg.get("dns") or [])
     d["dns_preset"] = match_dns_preset(dns_parts)
     d["dns_presets"] = [{"id": pid, "label": label, "dns": ",".join(ips)} for pid, label, ips in DNS_PRESETS]
@@ -4049,15 +4248,27 @@ def http_proxy_uri(name, u, cfg):
     )
 
 
-def mtg_uri(cfg):
+def mtg_link(cfg, secret, port):
     host = (cfg.get("domain") or cfg.get("public_ip") or "").strip()
-    port = int(cfg.get("mtg_port") or 3128)
-    secret = (cfg.get("mtg_secret") or "").strip()
     return "tg://proxy?server=%s&port=%d&secret=%s" % (
         urllib.parse.quote(host, safe=""),
-        port,
-        urllib.parse.quote(secret, safe=""),
+        int(port),
+        urllib.parse.quote(secret or "", safe=""),
     )
+
+
+def mtg_uri(cfg):
+    return mtg_link(cfg, (cfg.get("mtg_secret") or "").strip(), int(cfg.get("mtg_port") or 3128))
+
+
+def user_mtg_link(u, cfg):
+    secret = (u.get("mtg_secret") or "").strip()
+    port = _port_or_zero(u.get("mtg_port"))
+    if secret and port:
+        return mtg_link(cfg, secret, port)
+    if cfg.get("mtg_legacy") and (cfg.get("mtg_secret") or "").strip():
+        return mtg_uri(cfg)
+    return ""
 
 
 def sub_uris(name, u, cfg):
@@ -4072,8 +4283,10 @@ def sub_uris(name, u, cfg):
         uris.append(vmess_uri(name, u, cfg))
     if u.get("http_enabled") and u.get("password"):
         uris.append(http_proxy_uri(name, u, cfg))
-    if mtg_allowed(u) and (cfg.get("mtg_secret") or ""):
-        uris.append(mtg_uri(cfg))
+    if mtg_allowed(u):
+        link = user_mtg_link(u, cfg)
+        if link:
+            uris.append(link)
     return uris
 
 
@@ -4295,24 +4508,29 @@ def clients_mtg(name):
         flash("MTProto برای این کاربر فعال نیست.")
         return redirect(url_for("clients_page"))
     cfg = load_config()
-    if not (cfg.get("mtg_secret") or "").strip():
+    if not user_mtg_link(u, cfg):
         with _lock:
-            write_mtg_config(users)
+            write_mtg_config(load_users())
+            users = load_users()
+            u = users.get(name)
             cfg = load_config()
-    uri = mtg_uri(cfg)
+    if not u or not mtg_allowed(u):
+        flash("MTProto برای این کاربر فعال نیست.")
+        return redirect(url_for("clients_page"))
+    uri = user_mtg_link(u, cfg)
     d = dashboard_payload()
     d["admin_user"] = load_admin().get("user") or ""
     d.update(
         page="clients",
         page_title="MTProto — %s" % name,
-        page_subtitle="لینک پروکسی تلگرام (یک secret مشترک برای همهٔ کاربران فعال)",
+        page_subtitle="لینک شخصی MTProto این کاربر. لینک مشترک قدیمی فقط تا وقتی در تنظیمات روشن باشد کار می‌کند.",
         proto_name="MTProto",
         uri=uri,
         qr_url=url_for("clients_mtg_qr", name=name),
         method="FakeTLS",
-        server_key=cfg.get("mtg_secret") or "",
+        server_key=u.get("mtg_secret") or cfg.get("mtg_secret") or "",
         user_key="",
-        port=cfg.get("mtg_port") or 3128,
+        port=u.get("mtg_port") or cfg.get("mtg_port") or 3128,
     )
     return render_template("client_proto.html", **d)
 
@@ -4324,7 +4542,7 @@ def clients_mtg_qr(name):
     u = users.get(name)
     if not u or not mtg_allowed(u):
         return ("", 404)
-    png = qr_png(mtg_uri(load_config()))
+    png = qr_png(user_mtg_link(u, load_config()))
     return (png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
 
 
@@ -4951,6 +5169,79 @@ def settings_domain():
     return redirect(url_for("settings"))
 
 
+def _bump_auth_keep_owner(data):
+    data["auth_version"] = int(data.get("auth_version", 0)) + 1
+    session["auth_version"] = data["auth_version"]
+    session["role"] = "owner"
+
+
+@app.route("/settings/operators/add", methods=["POST"])
+@login_required
+@csrf_required
+@state_transaction
+def settings_operator_add():
+    denied = require_owner()
+    if denied:
+        return denied
+    user = (request.form.get("user") or "").strip()
+    pw = request.form.get("password") or ""
+    data = load_admin()
+    owner = data.get("user") or ""
+    if not USER_RE.fullmatch(user) or user == owner or len(pw) < 12 or len(pw) > 128:
+        flash_t("op_bad")
+        return redirect(url_for("settings"))
+    ops = [op for op in (data.get("operators") or []) if isinstance(op, dict)]
+    folded = {owner.casefold(), user.casefold()}
+    if any(str(op.get("user") or "").casefold() in folded for op in ops) or any(
+        str(op.get("user") or "").casefold() == user.casefold() for op in ops
+    ):
+        flash_t("op_exists")
+        return redirect(url_for("settings"))
+    if len(ops) >= 12:
+        flash_t("op_bad")
+        return redirect(url_for("settings"))
+    ops.append({"user": user, "password": generate_password_hash(pw), "role": "operator"})
+    data["operators"] = ops
+    _bump_auth_keep_owner(data)
+    save_admin(data)
+    flash_t("op_ok")
+    return redirect(url_for("settings"))
+
+
+@app.route("/settings/operators/remove", methods=["POST"])
+@login_required
+@csrf_required
+@state_transaction
+def settings_operator_remove():
+    denied = require_owner()
+    if denied:
+        return denied
+    user = (request.form.get("user") or "").strip()
+    data = load_admin()
+    ops = [op for op in (data.get("operators") or []) if isinstance(op, dict) and op.get("user") != user]
+    data["operators"] = ops
+    _bump_auth_keep_owner(data)
+    save_admin(data)
+    flash_t("op_ok")
+    return redirect(url_for("settings"))
+
+
+@app.route("/settings/mtg-legacy", methods=["POST"])
+@login_required
+@csrf_required
+@state_transaction
+def settings_mtg_legacy():
+    denied = require_owner()
+    if denied:
+        return denied
+    cfg = load_config()
+    cfg["mtg_legacy"] = request.form.get("mtg_legacy") == "1"
+    save_config(cfg)
+    write_mtg_config(load_users())
+    flash_t("mtg_legacy_ok")
+    return redirect(url_for("settings"))
+
+
 @app.route("/settings/psk", methods=["POST"])
 @login_required
 @csrf_required
@@ -4995,6 +5286,9 @@ def settings_dns():
 @csrf_required
 @state_transaction
 def settings_admin():
+    denied = require_owner()
+    if denied:
+        return denied
     pw = (request.form.get("password") or "").strip()
     if len(pw) < 12 or len(pw) > 128:
         flash_t("admin_len")
@@ -5013,6 +5307,9 @@ def settings_admin():
 @login_required
 @csrf_required
 def settings_totp_start():
+    denied = require_owner()
+    if denied:
+        return denied
     admin = load_admin()
     if admin.get("totp_enabled") and admin.get("totp_secret"):
         return redirect(url_for("settings"))
@@ -5025,6 +5322,9 @@ def settings_totp_start():
 @csrf_required
 @state_transaction
 def settings_totp_confirm():
+    denied = require_owner()
+    if denied:
+        return denied
     pending = session.get("totp_pending") or ""
     if not pending:
         return redirect(url_for("settings"))
@@ -5046,6 +5346,9 @@ def settings_totp_confirm():
 @csrf_required
 @state_transaction
 def settings_totp_off():
+    denied = require_owner()
+    if denied:
+        return denied
     data = load_admin()
     secret = data.get("totp_secret") or ""
     if not totp_ok(secret, request.form.get("totp") or ""):
@@ -5324,7 +5627,7 @@ def validate_restored_user(name, u):
         value = float(u.get(field) or 0)
         if not math.isfinite(value) or value < 0:
             raise ValueError(field)
-    for field in ("ss_port", "http_port"):
+    for field in ("ss_port", "http_port", "mtg_port"):
         if u.get(field) and not 1 <= int(u[field]) <= 65535:
             raise ValueError(field)
     if u.get("expires"):
@@ -5370,6 +5673,9 @@ def validate_restored_config(cfg):
 @login_required
 @csrf_required
 def settings_restore():
+    denied = require_owner()
+    if denied:
+        return denied
     upload = request.files.get("backup")
     if not upload or not upload.filename:
         flash_t("backup_missing")
@@ -5426,6 +5732,7 @@ def settings_restore():
         if "users.json" in extracted:
             USERS_FILE.write_bytes(extracted["users.json"])
             os.chmod(USERS_FILE, 0o600)
+            user_store.prefer_json(USERS_FILE)
         for base, data in extracted.items():
             if base in ("users.json", "config.json"):
                 continue

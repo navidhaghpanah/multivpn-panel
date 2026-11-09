@@ -44,7 +44,7 @@
 - سایدبار چپ، تم روشن و تیره، فارسی و انگلیسی
 - تیک جدا برای هر پروتکل هنگام ساخت کاربر
 - تاریخ انقضا و حجم به گیگ، مشترک بین پروتکل‌ها
-- سقف مجموع نشست‌های IKEv2/L2TP هر کاربر (پیش‌فرض ۱)؛ پروکسی‌ها سقف دستگاه ندارند
+- سقف مجموع نشست‌های IKEv2/L2TP هر کاربر (پیش‌فرض ۱). روی Shadowsocks، پروکسی HTTPS و MTProto شخصی هم IPهای جدا روی پورت اختصاصی همان کاربر محدود می‌شود
 - آنلاین‌ها، نشست‌ها، ترافیک
 - قطع دستی نشست و پاک‌سازی خودکار
 - QR و لینک برای VLESS / VMess / Shadowsocks / Hysteria2 / HTTP / MTProto و لینک اشتراک
@@ -56,7 +56,7 @@
 
 ### پروتکل‌های اضافه
 
-تاریخ انقضا روی همه اعمال می‌شود. حجم بین IKEv2/L2TP، Xray و Hysteria2 مشترک است. MTProto فقط برای حساب بدون سقف حجم است؛ با حذف عضو، secret مشترک عوض می‌شود و اعضای باقی‌مانده باید لینک جدید بگیرند.
+تاریخ انقضا روی همه اعمال می‌شود. حجم بین IKEv2/L2TP، Xray و Hysteria2 مشترک است. MTProto فقط برای حساب بدون سقف حجم است. هر کاربر لینک شخصی خودش را دارد؛ حذف یک کاربر لینک بقیه را عوض نمی‌کند. لینک مشترک قبلی، اگر از قبل وجود داشته باشد، تا وقتی در تنظیمات خاموش نشود سر جایش می‌ماند.
 
 | پروتکل | سرویس | پورت | احراز هویت |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@
 | Shadowsocks 2022 | همان xray | TCP/UDP از `8388` | کلید `2022-blake3-aes-128-gcm` |
 | Hysteria2 | `panel-hysteria.service` | UDP `443` | همان یوزر و رمز پنل |
 | HTTP proxy | همان xray | TCP `10809` | یوزر و رمز حساب VPN، با TLS و پورت اختصاصی هر کاربر |
-| MTProto | `panel-mtg.service` | TCP `3128` | یک secret برای کل پنل |
+| MTProto | `panel-mtg.service` | TCP `3128` مشترک قدیمی، و از `32000` برای هر کاربر | secret شخصی؛ لینک مشترک قبلی اختیاری |
 
 - VLESS و VMess و Shadowsocks و HTTP داخل یک `xray-core` هستند. MTProto با sidecar `mtg` است.
 - Reality به گواهی دامنه نیاز ندارد. کلیدها بار اول ساخته می‌شوند و در `config.json` می‌مانند. مقصد پیش‌فرض `www.microsoft.com:443`.
@@ -87,7 +87,8 @@
 | TCP `8443` | VLESS Reality |
 | TCP `2053` | VMess |
 | TCP from `10809` | HTTPS proxy (one port per user) |
-| TCP `3128` | MTProto |
+| TCP `3128` | MTProto مشترک قدیمی |
+| TCP از `32000` | MTProto شخصی |
 | UDP `443` | Hysteria2 |
 | TCP/UDP از `8388` | Shadowsocks، یک پورت برای هر کاربر |
 
@@ -178,7 +179,7 @@ The form defaults to an Iran-filtering bias (mobile, Reality/Hysteria up, IKEv2/
 - Left sidebar, light/dark, FA/EN
 - Per-protocol checkboxes on each account
 - Shared expiry and quota
-- Combined IKEv2/L2TP session cap (default 1); proxy device limits are not supported
+- Combined IKEv2/L2TP session cap (default 1). Shadowsocks, the HTTPS proxy and personal MTProto also cap distinct IPs on that account's own port
 - Live sessions, traffic, CPU, RAM, public IP, totals since boot
 - VPS speed test (server uplink, not your phone)
 - QR/links plus a subscription URL; HTTPS proxy links use `https://`
@@ -187,7 +188,7 @@ The form defaults to an Iran-filtering bias (mobile, Reality/Hysteria up, IKEv2/
 
 ### Extra protocols
 
-Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray and Hysteria2. MTProto is available only for unlimited-quota accounts; membership changes rotate its shared secret, so remaining members must refresh their links.
+Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray and Hysteria2. MTProto is available only for unlimited-quota accounts. Each account gets a personal link, so removing one user does not rotate the others. A pre-existing shared link keeps working until it is switched off in Settings.
 
 | Protocol | Unit | Default port | Auth |
 | --- | --- | --- | --- |
@@ -196,7 +197,7 @@ Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray and
 | Shadowsocks 2022 | same xray | TCP/UDP from `8388` | `2022-blake3-aes-128-gcm` |
 | Hysteria2 | `panel-hysteria.service` | UDP `443` | same panel password |
 | HTTP proxy | same xray | TCP `10809` | VPN account user/pass, TLS, a dedicated port per account |
-| MTProto | `panel-mtg.service` | TCP `3128` | one FakeTLS secret |
+| MTProto | `panel-mtg.service` | TCP `3128` legacy, from `32000` per user | personal FakeTLS secret; legacy shared link is optional |
 
 VLESS Reality does not need a domain cert. Keys are minted on first xray write and stored in `config.json`. Default dest is `www.microsoft.com:443`. Old VLESS+TLS links stop working after the Reality cutover; keep the UUID and import the new link.
 
@@ -215,7 +216,8 @@ Point the domain at the VPS first. Open:
 | TCP `8443` | VLESS Reality |
 | TCP `2053` | VMess |
 | TCP from `10809` | HTTPS proxy (one port per user) |
-| TCP `3128` | MTProto |
+| TCP `3128` | legacy shared MTProto |
+| TCP from `32000` | personal MTProto |
 | UDP `443` | Hysteria2 |
 | TCP/UDP from `8388` | Shadowsocks, one port per user |
 
@@ -286,9 +288,9 @@ The old updater's application-only copy is supported: the new application detect
 Important migration changes:
 
 - Existing deleted/disabled/expired/over-quota IKEv2 and L2TP sessions are terminated, and stale system credentials no longer recreate users in the panel.
-- MTProto members must refresh their shared link after migration and subsequent membership changes. Metered accounts cannot use this unmetered shared backend.
-- HTTP proxy now requires TLS and uses an individual port per account. Refresh the proxy link and use a client supporting HTTPS proxies; the old plaintext proxy settings stop working. The active UFW firewall is updated for generated ports; external provider firewalls must allow those ports too.
-- The session limit is a combined IKEv2/L2TP limit. Proxy protocols do not implement a reliable device cap. TCP connection count is not used as a substitute for device count.
+- MTProto accounts now get a personal link. The previous shared link is left in place (Settings → legacy MTProto) so existing `tg://` links keep working; turn that switch off after clients have imported the personal link. Removing one user no longer rotates everyone else. Metered accounts still cannot use MTProto. Open TCP `32000-32100` if the host firewall is not ufw.
+- HTTP proxy requires TLS and an individual port per account. The active UFW firewall is updated for generated ports; external provider firewalls must allow those ports too.
+- The session limit still covers IKEv2/L2TP. The same number now also caps distinct remote IPs on a user's own Shadowsocks, HTTPS-proxy and personal-MTProto ports. Shared VLESS, VMess and Hysteria ports are not firewalled. Traffic accounting is still polling, not an exact ledger.
 - Account expiry/quota enforcement runs immediately on changes and periodically (about every 20 seconds). Traffic accounting remains a polling system, rather than an exact billing ledger.
 - Admin password or TOTP changes revoke old panel sessions.
 - Certificate issuance runs outside the HTTP worker. Settings shows its result; failed issuance restores the previous domain configuration.

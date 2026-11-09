@@ -59,7 +59,7 @@ status running "Downloading and validating update"
 source_dir="$(mktemp -d "$DATA_DIR/update-source.XXXXXX")"
 git clone --depth 1 --branch "$BRANCH" https://github.com/navidhaghpanah/multivpn-panel.git "$source_dir/repo"
 REPO_DIR="$source_dir/repo"
-python3 -m py_compile "$REPO_DIR/panel/app.py" "$REPO_DIR/panel/state_lock.py" "$REPO_DIR/panel/telegram_bot.py"
+python3 -m py_compile "$REPO_DIR/panel/app.py" "$REPO_DIR/panel/state_lock.py" "$REPO_DIR/panel/telegram_bot.py" "$REPO_DIR/panel/user_store.py" "$REPO_DIR/panel/device_cap.py" "$REPO_DIR/panel/mtg_supervisor.py"
 for file in install.sh uninstall.sh scripts/deploy.sh scripts/update-worker.sh scripts/multivpn; do
   bash -n "$REPO_DIR/$file"
 done

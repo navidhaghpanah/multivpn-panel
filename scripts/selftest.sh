@@ -79,6 +79,7 @@ echo "== python compile"
 if command -v python3 >/dev/null; then
   python3 -m py_compile "$ROOT/panel/app.py" && ok "app.py compiles" || bad "app.py compile"
   python3 -m py_compile "$ROOT/panel/telegram_bot.py" && ok "telegram_bot.py compiles" || bad "telegram_bot compile"
+  python3 -m py_compile "$ROOT/panel/user_store.py" "$ROOT/panel/device_cap.py" "$ROOT/panel/mtg_supervisor.py" && ok "panel helpers compile" || bad "panel helpers"
   python3 -c "import ast; ast.parse(open('$ROOT/panel/app.py').read())" && ok "app.py ast.parse" || bad "app.py ast"
 else
   echo "  skip python3 not installed"
