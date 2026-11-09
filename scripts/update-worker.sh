@@ -49,12 +49,13 @@ cleanup() {
 }
 trap cleanup EXIT
 status running "Downloading and validating update"
-if [[ ! -d "$REPO_DIR/.git" ]]; then
-  git clone --branch "$BRANCH" https://github.com/navidhaghpanah/multivpn-panel.git "$REPO_DIR"
-fi
-git -C "$REPO_DIR" fetch origin "$BRANCH"
-git -C "$REPO_DIR" checkout "$BRANCH"
-git -C "$REPO_DIR" reset --hard "origin/$BRANCH"
+# Never reset the persistent checkout: operators may keep local work there.
+# Build each update from a fresh disposable checkout and leave REPO_DIR untouched.
+source_dir="$(mktemp -d "$DATA_DIR/update-source.XXXXXX")"
+cleanup_source() { rm -rf -- "$source_dir"; }
+trap cleanup_source EXIT
+git clone --depth 1 --branch "$BRANCH" https://github.com/navidhaghpanah/multivpn-panel.git "$source_dir/repo"
+REPO_DIR="$source_dir/repo"
 python3 -m py_compile "$REPO_DIR/panel/app.py" "$REPO_DIR/panel/state_lock.py" "$REPO_DIR/panel/telegram_bot.py"
 for file in install.sh uninstall.sh scripts/deploy.sh scripts/update-worker.sh scripts/multivpn; do
   bash -n "$REPO_DIR/$file"
