@@ -8,7 +8,11 @@ BRANCH="${1:-main}"
 [[ $EUID -eq 0 ]] || exit 1
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != -* ]] || exit 1
 exec 9>"$DATA_DIR/update.lock"
-flock -n 9 || exit 1
+if ! flock -n 9; then
+  status() { return 0; }
+  # Keep the existing running status; this duplicate worker exits without touching services.
+  exit 0
+fi
 snapshot="$(mktemp -d "$DATA_DIR/update-backup.XXXXXX")"
 status() {
   python3 - "$DATA_DIR/update-status.json" "$1" "${2:-}" <<'PY'
