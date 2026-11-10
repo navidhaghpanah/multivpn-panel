@@ -356,14 +356,78 @@ class AccountTests(unittest.TestCase):
         settings = c.get("/settings")
         self.assertEqual(settings.status_code, 200)
         self.assertNotIn("settings_operator_add", settings.get_data(as_text=True))
+        self.assertNotIn("/settings/psk", settings.get_data(as_text=True))
+        self.assertNotIn("settings_update_apply", settings.get_data(as_text=True))
         csrf = smoke._csrf(settings.get_data(as_text=True))
         denied = c.post("/settings/admin", data={"password": "a-new-password-xx", "csrf_token": csrf})
         self.assertEqual(denied.status_code, 302)
         self.assertEqual(self.A.load_admin()["password"], before)
+        users = c.get("/users")
+        self.assertNotIn("/users/delete", users.get_data(as_text=True))
+        csrf = smoke._csrf(users.get_data(as_text=True))
+        denied = c.post("/users/delete", data={"name": "alice", "csrf_token": csrf})
+        self.assertEqual(denied.status_code, 302)
+        self.assertIn("alice", self.A.load_users())
+        csrf = smoke._csrf(c.get("/settings").get_data(as_text=True))
+        denied = c.post("/settings/psk", data={"psk": "AnotherPskValue1", "csrf_token": csrf})
+        self.assertEqual(denied.status_code, 302)
+        self.assertEqual(self.A.load_config()["psk"], "ExamplePskValue")
+        denied = c.post("/settings/update/apply", data={"csrf_token": csrf})
+        self.assertEqual(denied.status_code, 302)
 
     def test_metered_accounts_cannot_use_shared_mtg(self):
-        self.assertFalse(self.A.mtg_allowed({"mtg_enabled": True, "quota_gb": 5}))
-        self.assertTrue(self.A.mtg_allowed({"mtg_enabled": True, "quota_gb": 0}))
+        metered = {"mtg_enabled": True, "quota_gb": 5, "enabled": True, "used_bytes": 0}
+        self.assertFalse(self.A.mtg_allowed(metered))
+        self.assertTrue(self.A.mtg_personal_allowed(metered))
+        self.assertTrue(self.A.mtg_allowed({"mtg_enabled": True, "quota_gb": 0, "enabled": True}))
+
+    def test_metered_mtg_gets_a_personal_listener_only(self):
+        source = (ROOT / "panel/app.py").read_text(encoding="utf-8")
+        import ast
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "write_mtg_config")
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "app.py", "exec"), self.A.__dict__)
+        users = self.A.load_users()
+        users["alice"].update(mtg_enabled=True, quota_gb=5)
+        users["bob"].update(mtg_enabled=True, quota_gb=0)
+        cfg = self.A.load_config()
+        cfg["mtg_secret"] = "ee" + ("ab" * 16) + "cloudflare.com".encode().hex()
+        cfg["mtg_legacy"] = True
+        self.A.save_config(cfg)
+        self.A.write_mtg_config(users)
+        text = (self.A.MTG_CONFIG.parent / "instances.json").read_text(encoding="utf-8")
+        self.assertIn('"id": "alice"', text)
+        self.assertIn('"id": "legacy"', text)
+        alice = self.A.load_users()["alice"]
+        self.assertTrue(alice.get("mtg_secret"))
+        self.assertNotEqual(int(alice.get("mtg_port") or 0), 3128)
+        self.assertGreaterEqual(int(alice.get("mtg_stats_port") or 0), 34000)
+        self.assertNotIn("3128", self.A.user_mtg_link(alice, self.A.load_config()))
+
+    def test_prometheus_mtg_ignores_fronting_probes(self):
+        text = "\n".join((
+            "# HELP mtg_telegram_traffic bytes",
+            'mtg_telegram_traffic{telegram_ip="1.1.1.1",dc="2",direction="to_client"} 10',
+            'mtg_telegram_traffic{telegram_ip="1.1.1.1",dc="2",direction="from_client"} 15',
+            'mtg_domain_fronting_traffic{direction="to_client"} 100',
+        ))
+        self.assertEqual(self.A.parse_mtg_prometheus(text), 25)
+
+    def test_saved_cursor_is_not_charged_twice_across_restart(self):
+        self.A.xray_ss_stats = lambda: {"alice": 100}
+        self.A.run = lambda cmd, timeout=10: "1000" if "show" in cmd else ""
+        self.A.sample_traffic()
+        self.A.sample_traffic()
+        self.assertEqual(self.A.load_users()["alice"]["used_bytes"], 100)
+        self.A.xray_ss_stats = lambda: {"alice": 40}
+        self.A.run = lambda cmd, timeout=10: "2000" if "show" in cmd else ""
+        self.A.sample_traffic()
+        self.assertEqual(self.A.load_users()["alice"]["used_bytes"], 140)
+
+    def test_counter_delta_keeps_a_failed_poll_from_replaying(self):
+        self.assertEqual(self.A.usage_ledger.counter_delta(100, 150, "1", "1"), 50)
+        self.assertEqual(self.A.usage_ledger.counter_delta(100, 100, "1", "1"), 0)
+        self.assertEqual(self.A.usage_ledger.counter_delta(100, 40, "1", "2"), 40)
+        self.assertEqual(self.A.usage_ledger.counter_delta(100, 120, "1", "1"), 20)
 
     def test_restore_rejects_invalid_port(self):
         with self.assertRaises(ValueError):

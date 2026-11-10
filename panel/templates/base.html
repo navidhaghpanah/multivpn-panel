@@ -55,8 +55,10 @@
             <form method="post" action="{{ url_for('settings_lang') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="lang" value="fa"><button type="submit" class="{{ 'active' if lang == 'fa' else '' }}">FA</button></form>
             <form method="post" action="{{ url_for('settings_lang') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="lang" value="en"><button type="submit" class="{{ 'active' if lang == 'en' else '' }}">EN</button></form>
           </div>
+          {% if is_owner %}
           <form method="post" action="{{ url_for('settings_restart') }}" data-confirm="{{ t.restart_confirm }}" data-confirm-title="{{ t.restart }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="ghost-button" type="submit">{{ t.restart }}</button></form>
           <form method="post" action="{{ url_for('settings_update_apply') }}" data-confirm="{{ t.update_confirm }}" data-confirm-title="{{ t['update'] }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="ghost-button" type="submit">{{ t['update'] }}</button></form>
+          {% endif %}
         </div>
         <code class="copyable" title="{{ t.copy_title }}">{{ host }}</code>
       </div>

@@ -79,7 +79,19 @@ def load_desired():
             continue
         if not ident or not secret or '"' in secret or "\n" in secret or not 1 <= port <= 65535:
             continue
-        out.append({"id": ident, "secret": secret, "port": port})
+        stats_port = 0
+        try:
+            stats_port = int(item.get("stats_port") or 0)
+        except (TypeError, ValueError):
+            stats_port = 0
+        if stats_port and not 1 <= stats_port <= 65535:
+            stats_port = 0
+        out.append({
+            "id": ident,
+            "secret": secret,
+            "port": port,
+            "stats_port": stats_port,
+        })
     return out
 
 
@@ -87,7 +99,12 @@ def reconcile():
     desired = load_desired()
     wanted = {}
     for item in desired:
-        key = "%s:%s:%s" % (item.get("id"), item.get("port", ""), item.get("secret", "") or item.get("toml", ""))
+        key = "%s:%s:%s:%s" % (
+            item.get("id"),
+            item.get("port", ""),
+            item.get("secret", "") or item.get("toml", ""),
+            item.get("stats_port", ""),
+        )
         wanted[key] = item
     for key in list(children):
         proc = children[key]
@@ -112,10 +129,14 @@ def reconcile():
             safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in item["id"]) or "user"
             toml_path = WORKDIR / (safe + ".toml")
             try:
-                toml_path.write_text(
-                    'secret = "%s"\nbind-to = "0.0.0.0:%d"\n' % (item["secret"], item["port"]),
-                    encoding="utf-8",
-                )
+                text = 'secret = "%s"\nbind-to = "0.0.0.0:%d"\n' % (item["secret"], item["port"])
+                stats_port = int(item.get("stats_port") or 0)
+                if 1 <= stats_port <= 65535:
+                    text += (
+                        "\n[stats.prometheus]\nenabled = true\n"
+                        'bind-to = "127.0.0.1:%d"\nhttp-path = "/"\nmetric-prefix = "mtg"\n'
+                    ) % stats_port
+                toml_path.write_text(text, encoding="utf-8")
                 os.chmod(toml_path, 0o600)
             except OSError:
                 continue

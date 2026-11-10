@@ -56,7 +56,7 @@
 
 ### پروتکل‌های اضافه
 
-تاریخ انقضا روی همه اعمال می‌شود. حجم بین IKEv2/L2TP، Xray و Hysteria2 مشترک است. MTProto فقط برای حساب بدون سقف حجم است. هر کاربر لینک شخصی خودش را دارد؛ حذف یک کاربر لینک بقیه را عوض نمی‌کند. لینک مشترک قبلی، اگر از قبل وجود داشته باشد، تا وقتی در تنظیمات خاموش نشود سر جایش می‌ماند.
+تاریخ انقضا روی همه اعمال می‌شود. حجم بین IKEv2/L2TP، Xray، Hysteria2 و MTProto شخصی مشترک است. هر کاربر لینک MTProto جدا دارد و بایت‌ها از شمارندهٔ همان پروسه خوانده می‌شود. لینک مشترک قدیمی فقط برای حساب بدون سقف حجم است و تا وقتی در تنظیمات خاموش نشود سر جایش می‌ماند.
 
 | پروتکل | سرویس | پورت | احراز هویت |
 | --- | --- | --- | --- |
@@ -188,7 +188,7 @@ The form defaults to an Iran-filtering bias (mobile, Reality/Hysteria up, IKEv2/
 
 ### Extra protocols
 
-Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray and Hysteria2. MTProto is available only for unlimited-quota accounts. Each account gets a personal link, so removing one user does not rotate the others. A pre-existing shared link keeps working until it is switched off in Settings.
+Expiry is enforced across protocols. Quota is shared across IKEv2/L2TP, Xray, Hysteria2 and personal MTProto. Each account gets its own MTProto link, and that process's byte counter is what the quota uses. The old shared link stays unlimited-only and keeps working until it is switched off in Settings.
 
 | Protocol | Unit | Default port | Auth |
 | --- | --- | --- | --- |
@@ -288,9 +288,9 @@ The old updater's application-only copy is supported: the new application detect
 Important migration changes:
 
 - Existing deleted/disabled/expired/over-quota IKEv2 and L2TP sessions are terminated, and stale system credentials no longer recreate users in the panel.
-- MTProto accounts now get a personal link. The previous shared link is left in place (Settings → legacy MTProto) so existing `tg://` links keep working; turn that switch off after clients have imported the personal link. Removing one user no longer rotates everyone else. Metered accounts still cannot use MTProto. Open TCP `32000-32100` if the host firewall is not ufw.
+- MTProto accounts now get a personal link, including metered accounts. Usage is read from that process's Prometheus counter (`mtg_telegram_traffic` on localhost). The previous shared link stays unlimited-only and is left in place (Settings → legacy MTProto) so existing `tg://` links keep working; turn that switch off after clients have imported the personal link. Removing one user no longer rotates everyone else. Open TCP `32000-32100` if the host firewall is not ufw.
 - HTTP proxy requires TLS and an individual port per account. The active UFW firewall is updated for generated ports; external provider firewalls must allow those ports too.
-- The session limit still covers IKEv2/L2TP. The same number now also caps distinct remote IPs on a user's own Shadowsocks, HTTPS-proxy and personal-MTProto ports. Shared VLESS, VMess and Hysteria ports are not firewalled. Traffic accounting is still polling, not an exact ledger.
+- The session limit still covers IKEv2/L2TP. The same number now also caps distinct remote IPs on a user's own Shadowsocks, HTTPS-proxy and personal-MTProto ports. Shared VLESS, VMess and Hysteria ports are not firewalled. Each traffic sample is stored with its counter in SQLite, so a panel crash cannot apply the same delta twice. A restarted xray/Hysteria/mtg process is a new counter and its bytes are added; a failed stats read does not clear the previous counter.
 - Account expiry/quota enforcement runs immediately on changes and periodically (about every 20 seconds). Traffic accounting remains a polling system, rather than an exact billing ledger.
 - Admin password or TOTP changes revoke old panel sessions.
 - Certificate issuance runs outside the HTTP worker. Settings shows its result; failed issuance restores the previous domain configuration.

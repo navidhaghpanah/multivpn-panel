@@ -1,13 +1,16 @@
-"""SQLite recovery copy of users.json.
+"""SQLite recovery copy of users.json plus traffic cursors.
 
 users.json stays the compatible mirror (backups, the Telegram bot, restore,
-and anything that reads the file directly). SQLite is only a second copy so a
-torn or corrupt JSON file can be recovered after an update.
+and anything that reads the file directly). save_users writes this database
+first, then replaces users.json. The database is stamped one second newer
+than the JSON it was copied from, so a crash before the JSON replace still
+recovers both the balance and the counters. After JSON is replaced it is
+newer again and the next load prefers it.
 
 Load prefers valid JSON when its mtime is greater than or equal to the SQLite
-file. Save writes JSON first, then replaces SQLite and stamps it one second
-newer. A restore writes JSON bytes and then calls prefer_json(), which makes
-JSON newer than SQLite so the restored copy wins.
+file. A restore writes JSON bytes and then calls prefer_json(), which makes
+JSON newer than SQLite so the restored copy wins. Cursors are always read
+from SQLite; a missing cursors table means this install has not sampled yet.
 """
 import json
 import os
@@ -47,20 +50,70 @@ def load_sqlite(users_file):
     return out
 
 
-def save_sqlite(users_file, users):
+def load_cursors(users_file):
+    """Return {key: {value, epoch}} or None when this database has no ledger yet."""
+    path = sqlite_path(users_file)
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % path.as_posix(), uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = conn.execute("SELECT key, value, epoch FROM cursors").fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    out = {}
+    for key, value, epoch in rows:
+        if not isinstance(key, str):
+            continue
+        try:
+            number = int(value or 0)
+        except (TypeError, ValueError):
+            number = 0
+        out[key] = {"value": number, "epoch": str(epoch or "")}
+    return out
+
+
+def save_sqlite(users_file, users, cursors=None):
     path = sqlite_path(users_file)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if cursors is None:
+        cursors = load_cursors(users_file) or {}
     tmp = path.with_name(path.name + ".tmp")
     if tmp.exists():
         tmp.unlink()
     conn = sqlite3.connect(str(tmp), timeout=5)
     try:
         conn.execute("CREATE TABLE users (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE cursors (key TEXT PRIMARY KEY, value INTEGER NOT NULL, epoch TEXT NOT NULL)"
+        )
         rows = []
         for name, payload in (users or {}).items():
             if isinstance(name, str) and isinstance(payload, dict):
                 rows.append((name, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
         conn.executemany("INSERT INTO users (name, payload) VALUES (?, ?)", rows)
+        cursor_rows = []
+        for key, row in (cursors or {}).items():
+            if not isinstance(key, str) or key.startswith("__"):
+                continue
+            if isinstance(row, dict):
+                try:
+                    value = int(row.get("value") or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                epoch = str(row.get("epoch") or "")
+            else:
+                try:
+                    value = int(row or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                epoch = ""
+            cursor_rows.append((key, value, epoch))
+        conn.executemany("INSERT INTO cursors (key, value, epoch) VALUES (?, ?, ?)", cursor_rows)
         conn.commit()
     finally:
         conn.close()

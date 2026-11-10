@@ -43,6 +43,7 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 from state_lock import StateLock
 import device_cap
+import usage_ledger
 import user_store
 
 APP_DIR = Path(os.environ.get("IKEGUI_APP", "/opt/ikev2-l2tp-gui"))
@@ -321,7 +322,7 @@ I18N = {
         "admin_pass_h": "از یک رمز اختصاصی و طولانی استفاده کنید.",
         "change_admin": "تغییر رمز پنل",
         "card_ops": "اپراتورها",
-        "card_ops_p": "ورود جدا، بدون کد مدیر. رمز و بازیابی و اپراتورها فقط برای مالک است.",
+        "card_ops_p": "ورود جدا، بدون کد مدیر. PSK، دامنه، تلگرام، آپدیت و حذف کاربر فقط برای مالک است.",
         "op_user": "نام اپراتور",
         "op_pass": "رمز اپراتور",
         "op_add": "افزودن اپراتور",
@@ -726,7 +727,7 @@ I18N = {
         "admin_pass_h": "Use a long, unique password.",
         "change_admin": "Change panel password",
         "card_ops": "Operators",
-        "card_ops_p": "Separate logins, without the owner's authenticator. Password, restore and operators stay owner-only.",
+        "card_ops_p": "Separate logins, without the owner's authenticator. PSK, domain, Telegram, update and user deletion stay owner-only.",
         "op_user": "Operator name",
         "op_pass": "Operator password",
         "op_add": "Add operator",
@@ -1259,7 +1260,7 @@ def reserved_ports(users, cfg):
     for user in (users or {}).values():
         if not isinstance(user, dict):
             continue
-        for key in ("ss_port", "http_port", "mtg_port"):
+        for key in ("ss_port", "http_port", "mtg_port", "mtg_stats_port"):
             port = _port_or_zero(user.get(key))
             if port:
                 reserved.add(port)
@@ -1410,15 +1411,18 @@ def load_users():
     return _normalize_users(data)
 
 
-def save_users(users):
-    save_json(USERS_FILE, users)
+def save_users(users, cursors=None):
+    # SQLite first, with the traffic cursors in the same file. If the process
+    # dies before users.json is replaced, the next load recovers both the
+    # balance and the counters, so the same delta is not applied twice.
     try:
-        user_store.save_sqlite(USERS_FILE, users)
+        user_store.save_sqlite(USERS_FILE, users, cursors=cursors)
     except Exception:
         try:
             user_store.prefer_json(USERS_FILE)
         except Exception:
             pass
+    save_json(USERS_FILE, users)
 
 
 def deleted_user_names():
@@ -1504,7 +1508,7 @@ def csrf_context():
         "lang": lang,
         "theme": current_theme(),
         "t": I18NView(I18N.get(lang) or I18N["fa"]),
-        "content_dir": "rtl" if lang == "fa" else "ltr",
+        "is_owner": bool(session.get("ok") and session.get("role", "owner") == "owner"),
     }
 
 
@@ -1807,11 +1811,18 @@ def wireguard_client_config(name, user, cfg=None):
     ))
 
 
-def mtg_allowed(u):
-    # Personal mtg still has no byte counter. Do not let a metered account
-    # bypass its quota through an unmetered MTProto listener.
+def mtg_personal_allowed(u):
+    """Personal listener. Quota is enforced from this process's own byte counter."""
     try:
-        return bool(u.get("mtg_enabled") and not user_blocked(u) and float(u.get("quota_gb") or 0) == 0)
+        return bool(u.get("mtg_enabled") and not user_blocked(u))
+    except (TypeError, ValueError):
+        return False
+
+
+def mtg_allowed(u):
+    # The legacy shared secret cannot be attributed to one account.
+    try:
+        return bool(mtg_personal_allowed(u) and float(u.get("quota_gb") or 0) == 0)
     except (TypeError, ValueError):
         return False
 
@@ -2212,6 +2223,7 @@ def write_hysteria_config(users=None):
 
 MTG_SECRET_RE = re.compile(r"ee[0-9a-fA-F]{32,}")
 MTG_USER_PORT_BASE = 32000
+MTG_STATS_PORT_BASE = 34000
 
 
 def mtg_instances_path():
@@ -2277,7 +2289,7 @@ def write_mtg_config(users=None):
     reserved = reserved_ports(users, cfg)
     users_changed = False
     for name, user in users.items():
-        if not mtg_allowed(user):
+        if not mtg_personal_allowed(user):
             continue
         secret = (user.get("mtg_secret") or "").strip()
         if not MTG_SECRET_RE.fullmatch(secret):
@@ -2290,21 +2302,30 @@ def write_mtg_config(users=None):
             users_changed = True
         else:
             reserved.add(port)
+        stats_port = _port_or_zero(user.get("mtg_stats_port"))
+        if not stats_port or stats_port == port or stats_port == legacy_port:
+            stats_port = allocate_free_port(reserved, MTG_STATS_PORT_BASE)
+            user["mtg_stats_port"] = stats_port
+            users_changed = True
+        else:
+            reserved.add(stats_port)
     if users_changed:
         save_users(users)
     if changed:
         save_config(cfg)
-    allowed = sorted(name for name, user in users.items() if mtg_allowed(user))
+    personal = sorted(name for name, user in users.items() if mtg_personal_allowed(user))
+    unlimited = [name for name in personal if mtg_allowed(users[name])]
     instances = []
     legacy_secret = (cfg.get("mtg_secret") or "").strip()
-    if cfg.get("mtg_legacy") and allowed and MTG_SECRET_RE.fullmatch(legacy_secret):
+    if cfg.get("mtg_legacy") and unlimited and MTG_SECRET_RE.fullmatch(legacy_secret):
         instances.append({"id": "legacy", "secret": legacy_secret, "port": legacy_port})
-    for name in allowed:
+    for name in personal:
         user = users[name]
         instances.append({
             "id": name,
             "secret": user.get("mtg_secret") or "",
             "port": int(user.get("mtg_port") or 0),
+            "stats_port": int(user.get("mtg_stats_port") or 0),
         })
     payload = json.dumps(instances, ensure_ascii=False, indent=2) + "\n"
     try:
@@ -2500,6 +2521,40 @@ def hysteria_stats():
     for user, v in (data or {}).items():
         if isinstance(v, dict):
             result[user] = int(v.get("tx") or 0) + int(v.get("rx") or 0)
+    return result
+
+
+def parse_mtg_prometheus(text):
+    """Sum mtg_telegram_traffic samples. Ignore fronting-domain probes."""
+    total = 0
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or not line.startswith("mtg_telegram_traffic"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            total += int(float(parts[-1]))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def mtg_user_stats(users):
+    result = {}
+    for name, user in (users or {}).items():
+        if not mtg_personal_allowed(user):
+            continue
+        port = _port_or_zero(user.get("mtg_stats_port"))
+        if not port:
+            continue
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d/" % port, timeout=0.4) as resp:
+                body = resp.read(1024 * 1024)
+        except (urllib.error.URLError, OSError, ValueError):
+            continue
+        result[name] = parse_mtg_prometheus(body.decode("utf-8", "replace"))
     return result
 
 
@@ -2746,6 +2801,34 @@ def revoke_invalid_sessions(users, sessions=None):
             terminate_user_session(s)
 
 
+def _cursor_prev(stored, snap, key, proto=None):
+    row = stored.get(key) if isinstance(stored, dict) else None
+    if isinstance(row, dict) and "value" in row:
+        try:
+            value = int(row.get("value") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        epoch = str(row.get("epoch") or "")
+        # A cursor written before its service epoch was known still has to
+        # honour the epoch already stored in the snap, or the first poll
+        # after an update would treat a restarted process as a continuation.
+        if not epoch and proto:
+            epoch = str(snap.get("__epoch_" + proto) or "")
+        return value, epoch
+    epoch = str(snap.get("__epoch_" + proto) or "") if proto else ""
+    try:
+        return int(snap.get(key) or 0), epoch
+    except (TypeError, ValueError):
+        return 0, epoch
+
+
+def _charge(users, name, delta):
+    if delta <= 0 or name not in users:
+        return False
+    users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + int(delta)
+    return True
+
+
 @state_transaction
 def sync_accounts(users=None):
     app._accounts_ready = False
@@ -2772,52 +2855,65 @@ def sample_traffic():
         snap = load_json(SNAP_FILE, {})
         new_snap = {k: v for k, v in snap.items()
                     if k.startswith("__") or k.split(":", 1)[0] in users}
-        changed = False
+        try:
+            stored = user_store.load_cursors(USERS_FILE) or {}
+        except Exception:
+            stored = {}
+        cursors = {}
+        for key, row in stored.items():
+            if isinstance(key, str) and not key.startswith("__") and key.split(":", 1)[0] in users:
+                cursors[key] = row if isinstance(row, dict) else {"value": row, "epoch": ""}
+        if not stored:
+            for key, value in snap.items():
+                if not isinstance(key, str) or key.startswith("__") or key.split(":", 1)[0] not in users:
+                    continue
+                try:
+                    number = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                epoch = ""
+                suffix = key.rsplit(":", 1)[-1]
+                if key.count(":") == 1 and suffix in ("ss", "hy", "mtg"):
+                    epoch = str(snap.get("__epoch_" + suffix) or "")
+                cursors[key] = {"value": number, "epoch": epoch}
         for s in sessions:
             name = find_user_name(users, s.get("user"))
             if name is None:
                 continue
             total = int(s.get("bytes_total") or 0)
             key = "%s:%s:%s:%s" % (name, s.get("proto"), s.get("id"), s.get("started", ""))
-            prev = int(snap.get(key, 0))
-            if total >= prev:
-                delta = total - prev
-            else:
-                delta = total
-            if delta > 0:
-                users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + delta
-                changed = True
+            prev, prev_epoch = _cursor_prev(cursors, snap, key)
+            delta = usage_ledger.counter_delta(prev, total, prev_epoch or None, None)
+            _charge(users, name, delta)
             new_snap[key] = total
-        account_ppp_disconnects(users, new_snap)
-        for proto, totals in (("ss", xray_ss_stats()), ("hy", hysteria_stats())):
-            unit = "panel-shadowsocks" if proto == "ss" else "panel-hysteria"
-            epoch = run(["systemctl", "show", unit, "--property=ActiveEnterTimestampMonotonic", "--value"]).strip()
-            if totals and epoch.isdigit() and epoch != "0":
-                old_epoch = snap.get("__epoch_" + proto)
-                if old_epoch and old_epoch != epoch:
-                    for key in list(new_snap):
-                        if key.endswith(":" + proto):
-                            new_snap.pop(key)
-                    snap = dict(snap)
-                    for key in list(snap):
-                        if key.endswith(":" + proto):
-                            snap.pop(key)
-                new_snap["__epoch_" + proto] = epoch
+            cursors[key] = {"value": total, "epoch": ""}
+        account_ppp_disconnects(users, new_snap, cursors)
+        for proto, totals, unit in (
+            ("ss", xray_ss_stats(), "panel-shadowsocks"),
+            ("hy", hysteria_stats(), "panel-hysteria"),
+            ("mtg", mtg_user_stats(users), ""),
+        ):
+            epoch = ""
+            if unit and totals:
+                raw_epoch = run(
+                    ["systemctl", "show", unit, "--property=ActiveEnterTimestampMonotonic", "--value"]
+                ).strip()
+                if raw_epoch.isdigit() and raw_epoch != "0":
+                    epoch = raw_epoch
+                    new_snap["__epoch_" + proto] = epoch
             for name, total in totals.items():
                 canonical_name = find_user_name(users, name)
                 if canonical_name is None:
                     continue
-                name = canonical_name
-                key = "%s:%s" % (name, proto)
-                prev = int(snap.get(key, 0))
-                delta = total - prev if total >= prev else total
-                if delta > 0:
-                    users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + delta
-                    changed = True
-                new_snap[key] = total
+                key = "%s:%s" % (canonical_name, proto)
+                prev, prev_epoch = _cursor_prev(cursors, snap, key, proto)
+                delta = usage_ledger.counter_delta(prev, int(total or 0), prev_epoch or None, epoch or None)
+                _charge(users, canonical_name, delta)
+                new_snap[key] = int(total or 0)
+                cursors[key] = {"value": int(total or 0), "epoch": epoch or prev_epoch}
         enforce_session_limits(sessions, new_snap)
         device_cap.enforce(users, snap, new_snap, max_sessions_per_user(), run)
-        save_users(users)
+        save_users(users, cursors=cursors)
         save_json(SNAP_FILE, new_snap)
         # Also reconcile deleted/disabled accounts on upgrade and every poll.
         # Writers skip unchanged proxy configs to preserve unrelated sessions.
@@ -2825,7 +2921,7 @@ def sample_traffic():
         return users, sessions
 
 
-def account_ppp_disconnects(users, snap):
+def account_ppp_disconnects(users, snap, cursors=None):
     logfile = DATA_DIR / "ppp-acct.log"
     try:
         with logfile.open("rb") as stream:
@@ -2849,9 +2945,14 @@ def account_ppp_disconnects(users, snap):
                     try:
                         total = int(rx) + int(tx)
                         key = "%s:L2TP:%s:%s" % (name, interface, started)
-                        previous = int(snap.get(key, 0))
+                        if cursors is not None and isinstance(cursors.get(key), dict):
+                            previous = int(cursors[key].get("value") or 0)
+                        else:
+                            previous = int(snap.get(key, 0))
                         users[name]["used_bytes"] = int(users[name].get("used_bytes") or 0) + max(0, total - previous)
                         snap[key] = total
+                        if cursors is not None:
+                            cursors[key] = {"value": total, "epoch": ""}
                     except (ValueError, TypeError):
                         pass
             snap["__ppp_offset"] = stream.tell()
@@ -3029,7 +3130,7 @@ def dashboard_payload():
                 "vless_enabled": bool(u.get("vless_enabled")),
                 "vmess_enabled": bool(u.get("vmess_enabled")),
                 "http_enabled": bool(u.get("http_enabled")),
-                "mtg_enabled": mtg_allowed(u),
+                "mtg_enabled": bool(u.get("mtg_enabled")),
             }
         )
     cfg = load_config()
@@ -3460,7 +3561,7 @@ def smart_vps_inventory(name, u, cfg):
         "vless": int(cfg.get("vless_port") or 8443),
         "vmess": int(cfg.get("vmess_port") or 2053),
         "http": int(u.get("http_port") or cfg.get("http_port") or 10809),
-        "mtg": int(cfg.get("mtg_port") or 3128),
+        "mtg": int(u.get("mtg_port") or cfg.get("mtg_port") or 3128),
         "hy": "%s/udp" % int(cfg.get("hy_port") or 443),
         "ss": int(u.get("ss_port") or 0) or None,
     }
@@ -3477,12 +3578,12 @@ def smart_vps_inventory(name, u, cfg):
             "vless": bool(u.get("vless_enabled")),
             "vmess": bool(u.get("vmess_enabled")),
             "http": bool(u.get("http_enabled")),
-            "mtg": mtg_allowed(u),
+            "mtg": mtg_personal_allowed(u),
         },
         "services": services,
         "le_cert": le_ok,
         "reality_public": bool((cfg.get("reality_public") or "").strip()),
-        "mtg_secret": bool((cfg.get("mtg_secret") or "").strip()),
+        "mtg_secret": bool((u.get("mtg_secret") or cfg.get("mtg_secret") or "").strip()),
         "ports": ports,
         "ufw_active": _ufw_active(),
     }
@@ -3584,7 +3685,7 @@ def _proto_enabled_for_user(pid, u):
     if pid == "http":
         return bool(u.get("http_enabled"))
     if pid == "mtg":
-        return mtg_allowed(u)
+        return mtg_personal_allowed(u)
     return False
 
 
@@ -4266,7 +4367,7 @@ def user_mtg_link(u, cfg):
     port = _port_or_zero(u.get("mtg_port"))
     if secret and port:
         return mtg_link(cfg, secret, port)
-    if cfg.get("mtg_legacy") and (cfg.get("mtg_secret") or "").strip():
+    if mtg_allowed(u) and cfg.get("mtg_legacy") and (cfg.get("mtg_secret") or "").strip():
         return mtg_uri(cfg)
     return ""
 
@@ -4283,7 +4384,7 @@ def sub_uris(name, u, cfg):
         uris.append(vmess_uri(name, u, cfg))
     if u.get("http_enabled") and u.get("password"):
         uris.append(http_proxy_uri(name, u, cfg))
-    if mtg_allowed(u):
+    if mtg_personal_allowed(u):
         link = user_mtg_link(u, cfg)
         if link:
             uris.append(link)
@@ -4504,7 +4605,7 @@ def clients_http_qr(name):
 def clients_mtg(name):
     users = load_users()
     u = users.get(name)
-    if not u or not mtg_allowed(u):
+    if not u or not mtg_personal_allowed(u):
         flash("MTProto برای این کاربر فعال نیست.")
         return redirect(url_for("clients_page"))
     cfg = load_config()
@@ -4514,7 +4615,7 @@ def clients_mtg(name):
             users = load_users()
             u = users.get(name)
             cfg = load_config()
-    if not u or not mtg_allowed(u):
+    if not u or not mtg_personal_allowed(u):
         flash("MTProto برای این کاربر فعال نیست.")
         return redirect(url_for("clients_page"))
     uri = user_mtg_link(u, cfg)
@@ -4540,7 +4641,7 @@ def clients_mtg(name):
 def clients_mtg_qr(name):
     users = load_users()
     u = users.get(name)
-    if not u or not mtg_allowed(u):
+    if not u or not mtg_personal_allowed(u):
         return ("", 404)
     png = qr_png(user_mtg_link(u, load_config()))
     return (png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"})
@@ -5093,6 +5194,9 @@ def users_update():
 @login_required
 @csrf_required
 def users_delete():
+    denied = require_owner()
+    if denied:
+        return denied
     name = (request.form.get("name") or "").strip()
     if not USER_RE.match(name):
         flash_t("user_bad")
@@ -5150,6 +5254,9 @@ def sessions_delete():
 @login_required
 @csrf_required
 def settings_domain():
+    denied = require_owner()
+    if denied:
+        return denied
     domain = (request.form.get("domain") or "").strip().lower()
     if not DOMAIN_RE.match(domain):
         flash_t("domain_bad")
@@ -5246,6 +5353,9 @@ def settings_mtg_legacy():
 @login_required
 @csrf_required
 def settings_psk():
+    denied = require_owner()
+    if denied:
+        return denied
     psk = (request.form.get("psk") or "").strip()
     if not safe_secret(psk, 12, 128):
         flash_t("psk_bad")
@@ -5263,6 +5373,9 @@ def settings_psk():
 @login_required
 @csrf_required
 def settings_dns():
+    denied = require_owner()
+    if denied:
+        return denied
     raw = (request.form.get("dns") or "").strip()
     parts = [p.strip() for p in re.split(r"[, ]+", raw) if p.strip()]
     if not parts or len(parts) > 4:
@@ -5368,6 +5481,9 @@ def settings_totp_off():
 @csrf_required
 @state_transaction
 def settings_profile():
+    denied = require_owner()
+    if denied:
+        return denied
     display_name = (request.form.get("display_name") or "").strip()[:64]
     contact = (request.form.get("contact") or "").strip()[:128]
     data = load_admin()
@@ -5382,6 +5498,9 @@ def settings_profile():
 @login_required
 @csrf_required
 def settings_sessions():
+    denied = require_owner()
+    if denied:
+        return denied
     raw = (request.form.get("max_sessions_per_user") or "").strip()
     try:
         limit = int(raw)
@@ -5407,6 +5526,9 @@ def settings_sessions():
 @login_required
 @csrf_required
 def settings_ai():
+    denied = require_owner()
+    if denied:
+        return denied
     base = (request.form.get("ai_base") or "").strip()
     model = (request.form.get("ai_model") or "").strip()[:128]
     new_key = (request.form.get("ai_api_key") or "").strip()
@@ -5431,6 +5553,9 @@ def settings_ai():
 @login_required
 @csrf_required
 def settings_telegram():
+    denied = require_owner()
+    if denied:
+        return denied
     token = (request.form.get("telegram_bot_token") or "").strip()
     ids_raw = (request.form.get("telegram_admin_ids") or "").strip()
     if token and not re.fullmatch(r"\d+:[A-Za-z0-9_-]{30,50}", token):
@@ -5577,6 +5702,9 @@ def settings_lang():
 @login_required
 @csrf_required
 def settings_restart():
+    denied = require_owner()
+    if denied:
+        return denied
     def later():
         time.sleep(1)
         run(["systemctl", "restart", "ikev2-l2tp-gui"], timeout=30)
@@ -5597,6 +5725,9 @@ def logs_page():
 @app.route("/settings/backup")
 @login_required
 def settings_backup():
+    denied = require_owner()
+    if denied:
+        return denied
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         if USERS_FILE.is_file():
@@ -5752,6 +5883,9 @@ def settings_restore():
 @login_required
 @csrf_required
 def settings_update_apply():
+    denied = require_owner()
+    if denied:
+        return denied
     ok, out = apply_update()
     if ok:
         flash("Update started. Wait for the panel to reconnect, then check Settings.")
