@@ -1768,7 +1768,13 @@ def write_wireguard_config(users=None):
             "AllowedIPs = %s/32" % user["wg_ip"],
         )))
     WG_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    save_private_text(WG_CONFIG, _wg_interface_block(cfg) + "\n\n" + "\n\n".join(peers) + "\n")
+    new_wg_text = _wg_interface_block(cfg) + "\n\n" + "\n\n".join(peers) + "\n"
+    try:
+        wg_changed = WG_CONFIG.read_text(encoding="utf-8") != new_wg_text
+    except OSError:
+        wg_changed = True
+    if wg_changed:
+        save_private_text(WG_CONFIG, new_wg_text)
     try:
         os.chmod(WG_CONFIG, 0o600)
     except OSError:
@@ -1790,8 +1796,14 @@ def write_wireguard_config(users=None):
         run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "-d", public_ip,
              "--dport", str(WG_ENDPOINT_PORT), "-j", "REDIRECT", "--to-ports", str(WG_PORT)], timeout=5)
         run(["netfilter-persistent", "save"], timeout=15)
-    run(["systemctl", "enable", "--now", "wg-quick@wg0"], timeout=20)
-    run(["systemctl", "restart", "wg-quick@wg0"], timeout=20)
+    # Do not restart wg0 every poll: recreating the interface makes charon send
+    # MOBIKE address updates and drops IKEv2 clients. Reload peers in place.
+    wg_up = subprocess.run(["ip", "link", "show", "wg0"], capture_output=True, timeout=5).returncode == 0
+    if not wg_up:
+        run(["systemctl", "enable", "--now", "wg-quick@wg0"], timeout=20)
+        run(["systemctl", "start", "wg-quick@wg0"], timeout=20)
+    elif wg_changed:
+        run(["bash", "-c", "wg syncconf wg0 <(wg-quick strip wg0)"], timeout=20)
 
 
 def wireguard_client_config(name, user, cfg=None):

@@ -207,6 +207,14 @@ for f in /etc/strongswan.d/charon/forecast.conf /etc/strongswan.d/charon/farp.co
   fi
 done
 
+# Keep IKEv2 sessions stable when WireGuard/WARP interfaces are (re)created:
+# charon must not treat their addresses as local endpoints (MOBIKE churn).
+cat >/etc/strongswan.d/charon-ignore.conf << 'EOF'
+charon {
+    interfaces_ignore = wg0, warp
+}
+EOF
+
 hdr "SSL (Let's Encrypt)..."
 HAVE_SSL=0
 systemctl stop nginx 2>/dev/null || true
@@ -263,7 +271,7 @@ conn %default
   rekey=no
   fragmentation=yes
   forceencaps=yes
-  mobike=yes
+  mobike=no
 
 conn L2TP-PSK
   keyexchange=ikev1
@@ -296,7 +304,7 @@ conn IKEv2-EAP
   rightauth=eap-mschapv2
   eap_identity=%identity
   rightsourceip=10.8.3.0/24
-  rightdns=9.9.9.9,1.0.0.1
+  rightdns=1.1.1.1,8.8.8.8
   auto=add
 EOF
 
@@ -332,8 +340,8 @@ mru 1200
 hide-password
 name l2tpd
 connect-delay 5000
-ms-dns 9.9.9.9
-ms-dns 1.0.0.1
+ms-dns 1.1.1.1
+ms-dns 8.8.8.8
 nobsdcomp
 nodeflate
 nopcomp
@@ -392,7 +400,7 @@ cfg = {
   "domain": os.environ["IKEGUI_INSTALL_DOMAIN"],
   "public_ip": os.environ["IKEGUI_INSTALL_PUBLIC_IP"],
   "psk": os.environ["IKEGUI_INSTALL_PSK"],
-  "dns": ["9.9.9.9", "1.0.0.1"],
+  "dns": ["1.1.1.1", "8.8.8.8"],
   "interface": os.environ["IKEGUI_INSTALL_INTERFACE"],
   "max_sessions_per_user": 3,
   "https": os.environ["IKEGUI_INSTALL_HTTPS"] == "1",
