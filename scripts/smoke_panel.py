@@ -76,6 +76,7 @@ def _import_app(app_dir: Path, cfg: Path, data: Path, sysdir: Path):
     sysdir.mkdir(parents=True, exist_ok=True)
     A.IPSEC_SECRETS = sysdir / "ipsec.secrets"
     A.CHAP_SECRETS = sysdir / "chap-secrets"
+    A.L2TP_SECRETS = sysdir / "l2tp-secrets"
     A.IPSEC_CONF = sysdir / "ipsec.conf"
     A.PPP_OPTS = sysdir / "options.xl2tpd"
     A.WG_CONFIG = sysdir / "wg0.conf"

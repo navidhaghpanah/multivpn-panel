@@ -215,6 +215,12 @@ charon {
 }
 EOF
 
+# Keep IKEv2 alive behind NAT, and don't let a 9000-byte cloud NIC pretend the path MTU is huge.
+cat >/etc/strongswan.d/charon/keepalive.conf << 'EOF'
+keep_alive = 15
+fragment_size = 1400
+EOF
+
 hdr "SSL (Let's Encrypt)..."
 HAVE_SSL=0
 systemctl stop nginx 2>/dev/null || true
@@ -228,20 +234,34 @@ if [[ -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]]; then
 fi
 certbot certonly --standalone --non-interactive --agree-tos \
   --cert-name "$DOMAIN" --key-type rsa --rsa-key-size 2048 \
+  --preferred-chain "ISRG Root X1" \
   "${KEEP[@]}" -d "$DOMAIN" "${CERT_MAIL[@]}"
 
 if [[ -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]]; then
   HAVE_SSL=1
-  cp -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" /etc/ipsec.d/certs/server.crt
-  cp -f "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" /etc/ipsec.d/private/server.key
-  chmod 600 /etc/ipsec.d/private/server.key
+  IKEGUI_COLLECTOR=0 IKEGUI_APP="$APP_DIR" IKEGUI_DOMAIN="$DOMAIN" python3 - << 'PY'
+import os, sys
+sys.path.insert(0, os.environ["IKEGUI_APP"])
+os.environ["IKEGUI_COLLECTOR"] = "0"
+import app
+if not app.install_ipsec_cert(os.environ["IKEGUI_DOMAIN"]):
+    raise SystemExit("ipsec cert chain was not installed")
+PY
   mkdir -p /etc/letsencrypt/renewal-hooks/deploy
   cat >/etc/letsencrypt/renewal-hooks/deploy/ikev2-l2tp-gui.sh << EOF
 #!/bin/bash
-cp -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/ipsec.d/certs/server.crt
-cp -f /etc/letsencrypt/live/${DOMAIN}/privkey.pem /etc/ipsec.d/private/server.key
-chmod 600 /etc/ipsec.d/private/server.key
+export IKEGUI_COLLECTOR=0
+export IKEGUI_APP=${APP_DIR}
+export IKEGUI_DOMAIN=${DOMAIN}
+python3 - << 'PY'
+import os, sys
+sys.path.insert(0, os.environ["IKEGUI_APP"])
+os.environ["IKEGUI_COLLECTOR"] = "0"
+import app
+app.install_ipsec_cert(os.environ["IKEGUI_DOMAIN"])
+PY
 ipsec rereadall >/dev/null 2>&1 || true
+ipsec reload >/dev/null 2>&1 || true
 systemctl reload nginx >/dev/null 2>&1 || true
 systemctl try-restart panel-shadowsocks panel-hysteria >/dev/null 2>&1 || true
 EOF
@@ -279,8 +299,8 @@ conn L2TP-PSK
   authby=secret
   pfs=no
   mobike=no
-  ike=aes256-sha256-modp2048,aes128-sha256-modp2048!
-  esp=aes256-sha256,aes128-sha256!
+  ike=aes256-sha256-modp2048,aes128-sha256-modp2048,aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!
+  esp=aes256-sha256,aes128-sha256,aes256-sha1,aes128-sha1!
   left=%any
   leftid=${PUBLIC_IP}
   leftprotoport=17/1701
@@ -291,8 +311,17 @@ conn L2TP-PSK
 conn IKEv2-EAP
   keyexchange=ikev2
   type=tunnel
-  ike=aes256gcm16-prfsha256-ecp256,aes256-sha256-ecp256,aes256-sha256-modp2048!
-  esp=aes256gcm16,aes128gcm16,aes256-sha256,aes128-sha256!
+  rekey=yes
+  ikelifetime=24h
+  lifetime=12h
+  margintime=20m
+  dpddelay=120s
+  dpdtimeout=120s
+  dpdaction=restart
+  mobike=yes
+  fragmentation=yes
+  ike=aes256gcm16-prfsha256-ecp256,aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha256-modp1024,aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!
+  esp=aes256gcm16,aes128gcm16,aes256-sha256,aes128-sha256,aes256-sha1,aes128-sha1!
   left=%any
   leftid=@${DOMAIN}
   leftcert=server.crt
@@ -308,22 +337,25 @@ conn IKEv2-EAP
   auto=add
 EOF
 
+# Plain L2TP stays open for CPE modems that cannot do IPsec (Huawei/Brovi).
+# The tunnel password is the panel PSK, written to l2tp-secrets. IPsec L2TP
+# still works on the same port for clients that negotiate it first.
 cat >/etc/xl2tpd/xl2tpd.conf << 'EOF'
 [global]
 port = 1701
-auth file = /etc/ppp/chap-secrets
 access control = no
+ipsec saref = no
 
 [lns default]
+challenge = yes
 ip range = 10.8.2.10-10.8.2.200
 local ip = 10.8.2.1
-require chap = yes
 refuse pap = yes
+require chap = yes
 require authentication = yes
 name = l2tpd
-ppp debug = yes
 pppoptfile = /etc/ppp/options.xl2tpd
-length bit = yes
+length bit = no
 EOF
 
 cat >/etc/ppp/options.xl2tpd << 'EOF'
@@ -335,8 +367,8 @@ refuse-mschap
 require-mschap-v2
 noccp
 auth
-mtu 1200
-mru 1200
+mtu 1400
+mru 1400
 hide-password
 name l2tpd
 connect-delay 5000
@@ -344,6 +376,8 @@ ms-dns 1.1.1.1
 ms-dns 8.8.8.8
 nobsdcomp
 nodeflate
+novj
+novjccomp
 nopcomp
 noaccomp
 noipv6
@@ -351,6 +385,7 @@ noproxyarp
 lock
 EOF
 
+modprobe tcp_bbr 2>/dev/null || true
 cat >/etc/sysctl.d/99-ikev2-l2tp-gui.conf << EOF
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.accept_redirects=0
@@ -360,6 +395,8 @@ net.ipv4.conf.default.send_redirects=0
 net.ipv4.conf.all.rp_filter=0
 net.ipv4.conf.default.rp_filter=0
 net.ipv4.conf.${IFACE}.rp_filter=0
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
 EOF
 sysctl -p /etc/sysctl.d/99-ikev2-l2tp-gui.conf >/dev/null
 
@@ -375,8 +412,8 @@ iptables -t nat -C POSTROUTING -s 10.8.2.0/24 -o "$IFACE" -j $NAT_JUMP 2>/dev/nu
   iptables -t nat -A POSTROUTING -s 10.8.2.0/24 -o "$IFACE" -j $NAT_JUMP
 iptables -t nat -C POSTROUTING -s 10.8.3.0/24 -o "$IFACE" -j $NAT_JUMP 2>/dev/null || \
   iptables -t nat -A POSTROUTING -s 10.8.3.0/24 -o "$IFACE" -j $NAT_JUMP
-iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || \
-  iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || \
+  iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320
 iptables -C FORWARD -s 10.8.2.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.2.0/24 -j ACCEPT
 iptables -C FORWARD -d 10.8.2.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.2.0/24 -j ACCEPT
 iptables -C FORWARD -s 10.8.3.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.3.0/24 -j ACCEPT

@@ -62,6 +62,7 @@ SNAP_FILE = DATA_DIR / "traffic-snap.json"
 SPEED_FILE = DATA_DIR / "speedtest.json"
 IPSEC_SECRETS = Path("/etc/ipsec.secrets")
 CHAP_SECRETS = Path("/etc/ppp/chap-secrets")
+L2TP_SECRETS = Path("/etc/xl2tpd/l2tp-secrets")
 IPSEC_CONF = Path("/etc/ipsec.conf")
 PPP_OPTS = Path("/etc/ppp/options.xl2tpd")
 WG_CONFIG = Path("/etc/wireguard/wg0.conf")
@@ -1674,6 +1675,21 @@ def write_secrets(users=None, psk=None, public_ip=None, domain=None):
             os.chmod(CHAP_SECRETS, 0o600)
         except OSError:
             pass
+        # Plain L2TP (home modems) uses this tunnel password. It is the panel
+        # PSK, so the modem field "tunnel password" and L2TP/IPsec PSK match.
+        if re.fullmatch(r"[A-Za-z0-9._~!@#%^&*+=,:;?/-]{8,128}", psk or ""):
+            l2tp_text = "* * %s\n" % psk
+            try:
+                current = L2TP_SECRETS.read_text(encoding="utf-8")
+            except OSError:
+                current = ""
+            if current != l2tp_text:
+                save_private_text(L2TP_SECRETS, l2tp_text)
+                try:
+                    os.chmod(L2TP_SECRETS, 0o600)
+                except OSError:
+                    pass
+                run(["systemctl", "restart", "xl2tpd"], timeout=15)
     except OSError:
         raise
     # Some strongSwan packages do not expose rereadsecrets through the same
@@ -2377,28 +2393,66 @@ def rewrite_ipsec_leftid(domain):
         IPSEC_CONF.write_text(new_text, encoding="utf-8")
 
 
-def _copy_le_to_ipsec(domain):
+def install_ipsec_cert(domain):
+    """Install the leaf, the Let's Encrypt intermediates, and ISRG Root X1.
+
+    strongSwan only sends certificates that sit below a trust anchor it knows.
+    Windows rejects the connection when the chain stops at a new Let's Encrypt
+    root it does not have. Putting ISRG Root X1 in cacerts makes the
+    intermediates get sent, and Windows already trusts that root.
+    """
     cert, key = le_cert_paths(domain)
     if not cert.is_file() or not key.is_file():
         return False
+    raw = cert.read_text(encoding="utf-8", errors="replace")
+    parts = []
+    buf = []
+    for line in raw.splitlines(True):
+        buf.append(line)
+        if "END CERTIFICATE" in line:
+            parts.append("".join(buf))
+            buf = []
+    if not parts:
+        return False
     IPSEC_CERT.parent.mkdir(parents=True, exist_ok=True)
     IPSEC_KEY.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(cert, IPSEC_CERT)
+    ca_dir = Path("/etc/ipsec.d/cacerts")
+    ca_dir.mkdir(parents=True, exist_ok=True)
+    leaf = parts[0] if parts[0].endswith("\n") else parts[0] + "\n"
+    IPSEC_CERT.write_text(leaf, encoding="utf-8")
+    for old in IPSEC_CERT.parent.glob("le-intermediate-*.crt"):
+        old.unlink()
+    for index, block in enumerate(parts[1:], start=1):
+        text = block if block.endswith("\n") else block + "\n"
+        (IPSEC_CERT.parent / ("le-intermediate-%d.crt" % index)).write_text(text, encoding="utf-8")
     shutil.copy2(key, IPSEC_KEY)
     os.chmod(IPSEC_KEY, 0o600)
+    root = APP_DIR / "isrgrootx1.pem"
+    if root.is_file():
+        shutil.copy2(root, ca_dir / "isrgrootx1.crt")
     return True
+
+
+def _copy_le_to_ipsec(domain):
+    return install_ipsec_cert(domain)
 
 
 def _write_certbot_hook(domain):
     CERTBOT_HOOK.parent.mkdir(parents=True, exist_ok=True)
     CERTBOT_HOOK.write_text(
         "#!/bin/bash\n"
-        "cp -f /etc/letsencrypt/live/%s/fullchain.pem /etc/ipsec.d/certs/server.crt\n"
-        "cp -f /etc/letsencrypt/live/%s/privkey.pem /etc/ipsec.d/private/server.key\n"
-        "chmod 600 /etc/ipsec.d/private/server.key\n"
+        "export IKEGUI_COLLECTOR=0\n"
+        "export IKEGUI_APP=%s\n"
+        "python3 - << 'PY'\n"
+        "import os, sys\n"
+        "sys.path.insert(0, os.environ['IKEGUI_APP'])\n"
+        "import app\n"
+        "app.install_ipsec_cert(%r)\n"
+        "PY\n"
         "ipsec rereadall >/dev/null 2>&1 || true\n"
+        "ipsec reload >/dev/null 2>&1 || true\n"
         "systemctl reload nginx >/dev/null 2>&1 || true\n"
-        "systemctl try-restart panel-shadowsocks panel-hysteria >/dev/null 2>&1 || true\n" % (domain, domain),
+        "systemctl try-restart panel-shadowsocks panel-hysteria >/dev/null 2>&1 || true\n" % (APP_DIR, domain),
         encoding="utf-8",
     )
     os.chmod(CERTBOT_HOOK, 0o755)
@@ -2461,6 +2515,8 @@ def apply_domain_ssl(old_domain, domain):
         "rsa",
         "--rsa-key-size",
         "2048",
+        "--preferred-chain",
+        "ISRG Root X1",
         "-d",
         domain,
         "--register-unsafely-without-email",

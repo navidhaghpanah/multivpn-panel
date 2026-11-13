@@ -1,4 +1,6 @@
 #!/bin/bash
 mkdir -p /var/run/ikev2-l2tp-gui
 echo "${PEERNAME:-?} ${IPREMOTE:-?} $(date +%s)" > "/var/run/ikev2-l2tp-gui/${IFNAME}"
+# Default ppp txqueuelen is 3. At ~100ms that caps the tunnel around a few Mbps.
+ip link set dev "$IFNAME" txqueuelen 1000 2>/dev/null || true
 exit 0

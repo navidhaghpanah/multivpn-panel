@@ -15,7 +15,7 @@
 نصب روی یک VPS، مدیریت از مرورگر. یک نام‌کاربری و رمز برای این پروتکل‌ها:
 
 - `IKEv2` (گواهی Let’s Encrypt + EAP-MSCHAPv2)
-- `L2TP/IPsec PSK`
+- `L2TP` ساده برای مودم (بدون IPsec) و `L2TP/IPsec PSK` برای بقیه. رمز تونل مودم همان PSK پنل است. UDP 1701 برای کلاینت بدون IPsec بسته نمی‌شود.
 - `VLESS Reality`
 - `VMess` روی `WS+TLS`
 - `Shadowsocks 2022`
@@ -158,7 +158,7 @@ sudo multivpn uninstall
 
 ## English
 
-VPN admin panel for Ubuntu 22.04 / 24.04. One username and password across IKEv2, L2TP/IPsec, VLESS Reality, VMess, Shadowsocks 2022, Hysteria2, HTTP proxy, and MTProto.
+VPN admin panel for Ubuntu 22.04 / 24.04. One username and password across IKEv2, plain L2TP for modems, L2TP/IPsec, VLESS Reality, VMess, Shadowsocks 2022, Hysteria2, HTTP proxy, and MTProto. The modem tunnel password is the panel PSK. UDP 1701 stays open without IPsec.
 
 ### Smart Connect
 
