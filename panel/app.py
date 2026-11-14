@@ -2472,10 +2472,9 @@ def rewrite_ipsec_leftid(domain):
 def install_ipsec_cert(domain):
     """Install the leaf, the Let's Encrypt intermediates, and ISRG Root X1.
 
-    strongSwan only sends certificates that sit below a trust anchor it knows.
-    Windows rejects the connection when the chain stops at a new Let's Encrypt
-    root it does not have. Putting ISRG Root X1 in cacerts makes the
-    intermediates get sent, and Windows already trusts that root.
+    strongSwan only sends a chain it has loaded from cacerts. Windows rejects
+    the connection when that chain stops before ISRG Root X1, which it already
+    trusts. The intermediates therefore live next to that root.
     """
     cert, key = le_cert_paths(domain)
     if not cert.is_file() or not key.is_file():
@@ -2498,19 +2497,18 @@ def install_ipsec_cert(domain):
     IPSEC_CERT.write_text(leaf, encoding="utf-8")
     for old in IPSEC_CERT.parent.glob("le-intermediate-*.crt"):
         old.unlink()
-    for index, block in enumerate(parts[1:], start=1):
-        text = block if block.endswith("\n") else block + "\n"
-        (IPSEC_CERT.parent / ("le-intermediate-%d.crt" % index)).write_text(text, encoding="utf-8")
     shutil.copy2(key, IPSEC_KEY)
     os.chmod(IPSEC_KEY, 0o600)
     root = APP_DIR / "isrgrootx1.pem"
     if root.is_file():
         shutil.copy2(root, ca_dir / "isrgrootx1.crt")
-    # An intermediate left in cacerts becomes a trust anchor, so strongSwan
-    # stops the chain there and Windows cannot reach ISRG Root X1.
-    for old in ca_dir.glob("*.crt"):
-        if old.name != "isrgrootx1.crt":
-            old.unlink()
+    # charon does not load CA certificates from ipsec.d/certs. They have to
+    # sit in cacerts or the chain stops at the leaf and Windows aborts.
+    for old in ca_dir.glob("le-intermediate-*.crt"):
+        old.unlink()
+    for index, block in enumerate(parts[1:], start=1):
+        text = block if block.endswith("\n") else block + "\n"
+        (ca_dir / ("le-intermediate-%d.crt" % index)).write_text(text, encoding="utf-8")
     return True
 
 
