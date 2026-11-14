@@ -297,7 +297,6 @@ conn L2TP-PSK
   keyexchange=ikev1
   type=transport
   authby=secret
-  pfs=no
   mobike=no
   ike=aes256-sha256-modp2048,aes128-sha256-modp2048,aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!
   esp=aes256-sha256,aes128-sha256,aes256-sha1,aes128-sha1!
