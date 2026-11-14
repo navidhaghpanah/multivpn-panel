@@ -90,17 +90,93 @@ def match_dns_preset(parts):
 
 
 def apply_tunnel_dns(parts):
+    parts = list(parts or [])[:4]
     if PPP_OPTS.exists():
         text = PPP_OPTS.read_text(encoding="utf-8", errors="replace")
         lines = [ln for ln in text.splitlines() if not ln.startswith("ms-dns ")]
-        for d in parts[:2]:
+        for d in parts:
             lines.append("ms-dns " + d)
         PPP_OPTS.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if IPSEC_CONF.exists() and parts:
         conf = IPSEC_CONF.read_text(encoding="utf-8", errors="replace")
-        conf = re.sub(r"rightdns=.*", "rightdns=" + ",".join(parts[:2]), conf)
+        conf = re.sub(r"(?m)^([ \t]*rightdns=).*", r"\1" + ",".join(parts), conf)
         IPSEC_CONF.write_text(conf, encoding="utf-8")
         run(["ipsec", "reload"])
+
+
+XL2TPD_CONF = Path("/etc/xl2tpd/xl2tpd.conf")
+
+
+def ensure_l2tp_modem():
+    """Keep plain L2TP working for modems after an update, not only a fresh install.
+
+    Restarts xl2tpd only when the file actually changes, so a normal panel
+    start does not drop a live modem session.
+    """
+    if not XL2TPD_CONF.is_file():
+        return False
+    original = XL2TPD_CONF.read_text(encoding="utf-8", errors="replace")
+    lines = [ln for ln in original.splitlines() if not re.match(r"\s*auth file\s*=", ln, re.I)]
+    text = "\n".join(lines).rstrip() + "\n"
+    if "[global]" in text and not re.search(r"(?m)^ipsec saref\s*=", text):
+        text = text.replace("[global]\n", "[global]\nipsec saref = no\n", 1)
+    text = re.sub(r"(?m)^ipsec saref\s*=\s*\S+", "ipsec saref = no", text)
+    if "[lns default]" in text and not re.search(r"(?m)^challenge\s*=", text):
+        text = text.replace("[lns default]\n", "[lns default]\nchallenge = yes\n", 1)
+    text = re.sub(r"(?m)^challenge\s*=\s*\S+", "challenge = yes", text)
+    if not re.search(r"(?m)^length bit\s*=", text):
+        text = text.rstrip() + "\nlength bit = no\n"
+    text = re.sub(r"(?m)^length bit\s*=\s*\S+", "length bit = no", text)
+    if text == original:
+        return False
+    XL2TPD_CONF.write_text(text, encoding="utf-8")
+    run(["systemctl", "restart", "xl2tpd"], timeout=15)
+    return True
+
+
+def ensure_ikev2_windows():
+    """Add the proposals Windows actually offers, and rekey instead of deleting.
+
+    ipsec reload keeps established SAs. A full restart would drop them.
+    """
+    if not IPSEC_CONF.is_file():
+        return False
+    text = IPSEC_CONF.read_text(encoding="utf-8", errors="replace")
+    parts = re.split(r"(?=^conn )", text, flags=re.M)
+    changed = False
+    out = []
+    extra = "aes256-sha256-modp1024,aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024"
+    for part in parts:
+        if not re.match(r"^conn\s+IKEv2-EAP\b", part):
+            out.append(part)
+            continue
+        new = part
+        match = re.search(r"(?m)^([ \t]*ike=)(\S+)", new)
+        if match and "modp1024" not in match.group(2):
+            props = match.group(2).rstrip("!")
+            new = new[:match.start(2)] + props + "," + extra + "!" + new[match.end(2):]
+        if not re.search(r"(?m)^[ \t]*rekey=", new):
+            new = new.replace(
+                "conn IKEv2-EAP\n",
+                "conn IKEv2-EAP\n"
+                "  rekey=yes\n"
+                "  ikelifetime=24h\n"
+                "  lifetime=12h\n"
+                "  margintime=20m\n"
+                "  dpddelay=120s\n"
+                "  dpdtimeout=120s\n"
+                "  dpdaction=restart\n"
+                "  mobike=yes\n",
+                1,
+            )
+        if new != part:
+            changed = True
+        out.append(new)
+    if not changed:
+        return False
+    IPSEC_CONF.write_text("".join(out), encoding="utf-8")
+    run(["ipsec", "reload"])
+    return True
 
 STROKE = Path("/usr/lib/ipsec/stroke")
 XRAY_SS_BIN = Path("/opt/panel-xray/xray")
@@ -5994,6 +6070,8 @@ def initialize_collector():
         domain = load_config().get("domain") or ""
         if DOMAIN_RE.fullmatch(domain):
             _write_certbot_hook(domain)
+        ensure_l2tp_modem()
+        ensure_ikev2_windows()
     except Exception:
         app.logger.exception("Account reconciliation failed")
     collector_loop()

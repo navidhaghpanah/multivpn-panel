@@ -74,6 +74,32 @@ class AccountTests(unittest.TestCase):
         self.A.IPSEC_SECRETS.write_text('alice : EAP "stale"\n')
         self.assertEqual(self.A.import_secrets_if_needed()["alice"]["password"], "alicepass")
 
+    def test_update_keeps_modem_l2tp_and_windows_ike(self):
+        self.A.XL2TPD_CONF = self.root / "sys" / "xl2tpd.conf"
+        self.A.XL2TPD_CONF.write_text(
+            "[global]\nport = 1701\nauth file = /etc/ppp/chap-secrets\n\n"
+            "[lns default]\nlength bit = yes\n",
+            encoding="utf-8",
+        )
+        self.A.IPSEC_CONF.write_text(
+            "conn IKEv2-EAP\n  ike=aes256-sha256-modp2048!\n  leftid=@vpn.example.com\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(self.A.ensure_l2tp_modem())
+        text = self.A.XL2TPD_CONF.read_text(encoding="utf-8")
+        self.assertIn("challenge = yes", text)
+        self.assertIn("ipsec saref = no", text)
+        self.assertIn("length bit = no", text)
+        self.assertNotIn("auth file", text)
+        self.assertFalse(self.A.ensure_l2tp_modem())
+        self.assertTrue(self.A.ensure_ikev2_windows())
+        ike = self.A.IPSEC_CONF.read_text(encoding="utf-8")
+        self.assertIn("modp1024", ike)
+        self.assertIn("rekey=yes", ike)
+        self.assertIn("leftid=@vpn.example.com", ike)
+        self.assertFalse(self.A.ensure_ikev2_windows())
+
+
     def test_delete_revokes_active_session_and_credentials(self):
         c = self.client()
         csrf = smoke._csrf(c.get("/users").get_data(as_text=True))
