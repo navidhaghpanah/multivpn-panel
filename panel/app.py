@@ -2506,6 +2506,11 @@ def install_ipsec_cert(domain):
     root = APP_DIR / "isrgrootx1.pem"
     if root.is_file():
         shutil.copy2(root, ca_dir / "isrgrootx1.crt")
+    # An intermediate left in cacerts becomes a trust anchor, so strongSwan
+    # stops the chain there and Windows cannot reach ISRG Root X1.
+    for old in ca_dir.glob("*.crt"):
+        if old.name != "isrgrootx1.crt":
+            old.unlink()
     return True
 
 
