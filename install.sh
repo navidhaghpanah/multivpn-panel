@@ -182,7 +182,8 @@ apt-get update -y
 apt-get install -y \
   strongswan strongswan-pki libcharon-extra-plugins libstrongswan-extra-plugins \
   libstrongswan-standard-plugins xl2tpd ppp iptables iptables-persistent \
-  certbot nginx python3-flask gunicorn curl openssl unzip wireguard-tools qrencode
+  certbot nginx python3-flask gunicorn curl openssl unzip wireguard-tools qrencode \
+  dnsmasq
 
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
 for f in /etc/ipsec.conf /etc/ipsec.secrets /etc/xl2tpd/xl2tpd.conf /etc/ppp/options.xl2tpd \
@@ -394,6 +395,7 @@ net.ipv4.conf.default.send_redirects=0
 net.ipv4.conf.all.rp_filter=0
 net.ipv4.conf.default.rp_filter=0
 net.ipv4.conf.${IFACE}.rp_filter=0
+net.ipv4.conf.all.route_localnet=1
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
@@ -417,6 +419,29 @@ iptables -C FORWARD -s 10.8.2.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD 
 iptables -C FORWARD -d 10.8.2.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.2.0/24 -j ACCEPT
 iptables -C FORWARD -s 10.8.3.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.3.0/24 -j ACCEPT
 iptables -C FORWARD -d 10.8.3.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.3.0/24 -j ACCEPT
+
+# Modem browsers follow AAAA answers out the SIM and never enter L2TP.
+# Answer those clients from a local resolver that returns only IPv4.
+cat >/etc/dnsmasq.d/l2tp.conf << 'EOF'
+port=5353
+listen-address=127.0.0.1
+bind-interfaces
+no-resolv
+no-hosts
+filter-AAAA
+filter-rr=HTTPS
+server=1.1.1.1
+server=1.0.0.1
+cache-size=1000
+EOF
+systemctl enable dnsmasq >/dev/null
+systemctl restart dnsmasq
+while iptables -t nat -D PREROUTING -s 10.8.2.0/24 -p udp --dport 53 -j DNAT --to-destination 1.1.1.1 2>/dev/null; do :; done
+while iptables -t nat -D PREROUTING -s 10.8.2.0/24 -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1 2>/dev/null; do :; done
+iptables -t nat -C PREROUTING -s 10.8.2.0/24 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5353 2>/dev/null || \
+  iptables -t nat -I PREROUTING 1 -s 10.8.2.0/24 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5353
+iptables -t nat -C PREROUTING -s 10.8.2.0/24 -p tcp --dport 53 -j DNAT --to-destination 127.0.0.1:5353 2>/dev/null || \
+  iptables -t nat -I PREROUTING 1 -s 10.8.2.0/24 -p tcp --dport 53 -j DNAT --to-destination 127.0.0.1:5353
 netfilter-persistent save >/dev/null 2>&1 || iptables-save > /etc/iptables/rules.v4 || true
 
 IKEGUI_INSTALL_CFG_DIR="$CFG_DIR" IKEGUI_INSTALL_DATA_DIR="$DATA_DIR" \
